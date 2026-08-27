@@ -86,10 +86,14 @@ test("renderer keeps long issues readable on mobile", () => {
   );
 
   assert.equal((rendered.html.match(/<h1\b/g) ?? []).length, 1, "the shell title should not be duplicated in the feed body");
+  assert.match(rendered.html, /<h1 class="email-title"[^>]*>Reading issue<\/h1>/);
   assert.match(rendered.html, /<h2 class="overview-heading">概览<\/h2>/);
   assert.match(rendered.html, /<h3 class="summary-heading">要闻<\/h3>/);
   assert.match(rendered.html, /<h2 class="section-heading">要闻<\/h2>/);
   assert.match(rendered.html, /<h3 class="article-heading"><a/);
+  assert.match(rendered.html, /style="color:#2c2926;text-decoration:none"/);
+  assert.match(rendered.html, /background:#f0ebe4/);
+  assert.doesNotMatch(rendered.html, /color:#175cd3/);
   assert.match(rendered.html, /<img width="100%"[^>]*style="[^"]*max-width:100%/);
   assert.doesNotMatch(rendered.html, /width="5076"|height="2160"/);
   assert.match(rendered.html, /@media screen and \(max-width:600px\)/);
