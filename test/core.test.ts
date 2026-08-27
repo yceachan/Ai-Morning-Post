@@ -70,6 +70,31 @@ test("RSS parser handles content:encoded and renderer removes active content", (
   assert.match(rendered.text, /Hello world/);
 });
 
+test("renderer keeps long issues readable on mobile", () => {
+  const rendered = renderIssueContent(
+    `<p><img src="/cover.png" width="5076" height="2160"></p>
+     <h1>Reading issue</h1>
+     <h2>概览</h2><h3>要闻</h3><ul><li>一条摘要</li></ul>
+     <hr><h2>要闻</h2><h3><a href="/story">文章标题</a> <code>#1</code></h3>
+     <blockquote>文章摘要</blockquote><p>文章正文。</p>`,
+    {
+      title: "Reading issue",
+      link: "https://example.test/issue",
+      publishedAt: "Thu, 27 Aug 2026 01:00:00 GMT",
+      baseUrl: "https://daily.juya.uk/rss.xml",
+    },
+  );
+
+  assert.equal((rendered.html.match(/<h1\b/g) ?? []).length, 1, "the shell title should not be duplicated in the feed body");
+  assert.match(rendered.html, /<h2 class="overview-heading">概览<\/h2>/);
+  assert.match(rendered.html, /<h3 class="summary-heading">要闻<\/h3>/);
+  assert.match(rendered.html, /<h2 class="section-heading">要闻<\/h2>/);
+  assert.match(rendered.html, /<h3 class="article-heading"><a/);
+  assert.match(rendered.html, /<img width="100%"[^>]*style="[^"]*max-width:100%/);
+  assert.doesNotMatch(rendered.html, /width="5076"|height="2160"/);
+  assert.match(rendered.html, /@media screen and \(max-width:600px\)/);
+});
+
 test("fetch uses conditional headers and persists issues/feed state", async () => {
   const { directory } = tempPath("db.sqlite");
   const store = new Store(join(directory, "db.sqlite"));
