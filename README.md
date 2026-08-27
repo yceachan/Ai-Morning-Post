@@ -37,14 +37,15 @@ node dist/cli.js --config config.toml subscriber list
 
 配置 QQ 邮箱 SMTP：服务器 `smtp.qq.com`，端口 `465`，SSL/TLS 开启，用户名使用完整邮箱地址 `yceachan@qq.com`。密码必须是 QQ 邮箱设置中生成的 16 位 SMTP 授权码，不是 QQ 登录密码；修改 QQ 密码后需要重新生成授权码。QQ 官方说明见[帮助文档](https://help.mail.qq.com/detail/106/985)。
 
-认证值不要写入 Git 或提交到 `config.toml`。在服务器的 `~/.profile`（或 `~/.zprofile`）中提供环境变量：
+认证值不要写入 Git 或提交到 `config.toml`。在服务器的 `~/.profile` 中提供环境变量，并把文件权限设为仅自己可读：
 
 ```bash
 export QQ_SMTP_USERNAME='yceachan@qq.com'
 export QQ_SMTP_AUTH_CODE='在 QQ 邮箱生成的 16 位授权码'
+chmod 600 ~/.profile
 ```
 
-`config.toml` 只保留 `$QQ_SMTP_USERNAME`、`$QQ_SMTP_AUTH_CODE` 等引用；程序支持 `$NAME` 和 `${NAME}`。`scripts/run-job.sh` 被 cron/systemd 调用时会显式加载 `~/.profile` 和存在的 `~/.zprofile`，profile 应包含可由 bash 执行的 `export` 声明。更严格的生产环境可把这些变量改放在仅当前用户可读的独立 `EnvironmentFile`，再让调度器加载。
+`config.toml` 只保留 `$QQ_SMTP_USERNAME`、`$QQ_SMTP_AUTH_CODE` 等引用；程序支持 `$NAME` 和 `${NAME}`。`scripts/run-job.sh` 被 cron/systemd 调用时会显式加载 `~/.profile`，profile 应只包含可由 Bash/POSIX shell 执行的 `export` 声明。更严格的生产环境可把这些变量改放在仅当前用户可读的独立 `EnvironmentFile`，再让调度器加载。
 
 ## VPS 部署
 

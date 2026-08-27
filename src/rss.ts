@@ -118,49 +118,49 @@ export async function fetchAndStore(
   if (!fetchImpl) throw new Error("This Node.js runtime does not provide fetch");
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
-  let response: Response;
   try {
-    response = await fetchImpl(config.url, { headers, signal: controller.signal });
+    const response = await fetchImpl(config.url, { headers, signal: controller.signal });
+    const checkedAt = new Date().toISOString();
+    if (response.status === 304) {
+      store.updateFeedState({ lastCheckedAt: checkedAt });
+      return {
+        status: "not-modified",
+        fetched: 0,
+        inserted: 0,
+        issueIds: [],
+        firstFetch: issueCountBefore === 0,
+      };
+    }
+    if (!response.ok) throw new Error(`RSS request failed with HTTP ${response.status}`);
+
+    // Keep the AbortController active through response body consumption; a
+    // server can return headers promptly and then stall the XML body.
+    const xml = await response.text();
+    const issues = parseFeed(xml, config.url);
+    const issueIds: number[] = [];
+    let inserted = 0;
+    for (const issue of issues) {
+      const rendered = renderIssueContent(issue.contentHtml, {
+        title: issue.title,
+        link: issue.link,
+        publishedAt: issue.publishedAt,
+        mode,
+        baseUrl: config.url,
+      });
+      const result = store.insertIssue(issue, rendered.html, rendered.text);
+      if (result.isNew) {
+        issueIds.push(result.id);
+        inserted += 1;
+      }
+    }
+    store.updateFeedState({
+      etag: response.headers.get("etag"),
+      lastModified: response.headers.get("last-modified"),
+      lastCheckedAt: checkedAt,
+      lastSuccessAt: checkedAt,
+    });
+    return { status: "updated", fetched: issues.length, inserted, issueIds, firstFetch: issueCountBefore === 0 };
   } finally {
     clearTimeout(timeout);
   }
-
-  const checkedAt = new Date().toISOString();
-  if (response.status === 304) {
-    store.updateFeedState({ lastCheckedAt: checkedAt });
-    return {
-      status: "not-modified",
-      fetched: 0,
-      inserted: 0,
-      issueIds: [],
-      firstFetch: issueCountBefore === 0,
-    };
-  }
-  if (!response.ok) throw new Error(`RSS request failed with HTTP ${response.status}`);
-
-  const xml = await response.text();
-  const issues = parseFeed(xml, config.url);
-  const issueIds: number[] = [];
-  let inserted = 0;
-  for (const issue of issues) {
-    const rendered = renderIssueContent(issue.contentHtml, {
-      title: issue.title,
-      link: issue.link,
-      publishedAt: issue.publishedAt,
-      mode,
-      baseUrl: config.url,
-    });
-    const result = store.insertIssue(issue, rendered.html, rendered.text);
-    if (result.isNew) {
-      issueIds.push(result.id);
-      inserted += 1;
-    }
-  }
-  store.updateFeedState({
-    etag: response.headers.get("etag"),
-    lastModified: response.headers.get("last-modified"),
-    lastCheckedAt: checkedAt,
-    lastSuccessAt: checkedAt,
-  });
-  return { status: "updated", fetched: issues.length, inserted, issueIds, firstFetch: issueCountBefore === 0 };
 }

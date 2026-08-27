@@ -18,7 +18,7 @@ const sampleXml = `<?xml version="1.0" encoding="UTF-8"?>
       <link>https://daily.juya.uk/issues/two</link>
       <guid>issue-two</guid>
       <pubDate>Thu, 27 Aug 2026 01:00:00 GMT</pubDate>
-      <content:encoded><![CDATA[<p>Hello <strong>world</strong>.</p><script>alert('x')</script><img src="/image.png" onerror="bad()" />]]></content:encoded>
+      <content:encoded><![CDATA[<p style="position:fixed;background:url(javascript:alert(1))">Hello <strong>world</strong>.</p><script>alert('x')</script><img src="/image.png" onerror="bad()" />]]></content:encoded>
     </item>
     <item>
       <title>Issue One</title><link>/issues/one</link><pubDate>Wed, 26 Aug 2026 01:00:00 GMT</pubDate>
@@ -65,6 +65,7 @@ test("RSS parser handles content:encoded and renderer removes active content", (
   });
   assert.doesNotMatch(rendered.html, /<script/i);
   assert.doesNotMatch(rendered.html, /onerror/i);
+  assert.doesNotMatch(rendered.html, /position:fixed/i);
   assert.match(rendered.html, /https:\/\/daily\.juya\.uk\/image\.png/);
   assert.match(rendered.text, /Hello world/);
 });
@@ -216,5 +217,34 @@ test("run retries failed deliveries when RSS returns 304", async () => {
   assert.equal(result, 0);
   assert.equal(sent.length, 1);
   assert.equal(sent[0].to, "yceachan@foxmail.com");
+  rmSync(directory, { recursive: true, force: true });
+});
+
+test("run queues recipients before SMTP validation so missing credentials do not lose an issue", async () => {
+  const { directory, path: configPath } = tempPath("config.toml");
+  const dbPath = join(directory, "db.sqlite");
+  writeFileSync(configPath, `[feed]\nurl = "https://daily.juya.uk/rss.xml"\n[database]\npath = "${dbPath.replaceAll("\\", "/")}"\n`);
+  const setup = new Store(dbPath);
+  setup.upsertSubscriber("yceachan@foxmail.com");
+  setup.close();
+
+  await assert.rejects(
+    runCli(["--config", configPath, "run"], {
+      fetchImpl: async () => new Response(sampleXml, { status: 200, headers: { etag: '"queued"' } }),
+    }),
+    /Missing SMTP configuration/,
+  );
+  const queued = new Store(dbPath);
+  const pendingCount = Number((queued.db.prepare("SELECT COUNT(*) AS count FROM deliveries WHERE status = 'pending'").get() as { count: number }).count);
+  assert.equal(pendingCount, 1);
+  queued.close();
+
+  const sent: string[] = [];
+  const result = await runCli(["--config", configPath, "run"], {
+    fetchImpl: async () => new Response(null, { status: 304 }),
+    mailer: { async send(message) { sent.push(message.to); return {}; } },
+  });
+  assert.equal(result, 0);
+  assert.deepEqual(sent, ["yceachan@foxmail.com"]);
   rmSync(directory, { recursive: true, force: true });
 });

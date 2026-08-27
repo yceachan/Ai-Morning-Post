@@ -251,6 +251,16 @@ export class Store {
     return this.mapDelivery(row);
   }
 
+  queueIssueForActiveSubscribers(issueId: number): number {
+    let queued = 0;
+    for (const subscriber of this.listSubscribers()) {
+      const existed = this.getDelivery(issueId, subscriber.id) !== null;
+      this.ensureDelivery(issueId, subscriber.id);
+      if (!existed) queued += 1;
+    }
+    return queued;
+  }
+
   getDelivery(issueId: number, subscriberId: number): DeliveryRecord | null {
     const row = this.db.prepare(
       "SELECT * FROM deliveries WHERE issue_id = ? AND subscriber_id = ?",

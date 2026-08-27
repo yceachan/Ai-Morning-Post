@@ -57,10 +57,9 @@ exec /usr/bin/env bash -c '
     fi
   }
 
-  # ~/.profile is the conventional place for cron-safe exports. Some hosts
-  # keep the same exports in ~/.zprofile; source it too when it exists.
+  # ~/.profile is the conventional place for cron-safe POSIX exports. Do not
+  # source shell-specific profiles here: this wrapper intentionally uses Bash.
   load_profile "$HOME/.profile"
-  load_profile "$HOME/.zprofile"
 
   exec "$@"
 ' _ /usr/bin/node "$app_entry" --config "$app_config" run

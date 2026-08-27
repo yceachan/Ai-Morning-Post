@@ -134,6 +134,7 @@ export async function runCli(args: string[] = process.argv.slice(2), dependencie
         outputLine(write, `Dry-run: would send latest issue to ${store.listSubscribers().length} recipient(s)`);
         return 0;
       }
+      store.queueIssueForActiveSubscribers(issue.id);
       mailer = await makeMailer(config, dependencies);
       const result = await sendIssue(store, issue, mailer, config.email.subjectPrefix, {
         includeAllActiveSubscribers: true,
@@ -163,6 +164,10 @@ export async function runCli(args: string[] = process.argv.slice(2), dependencie
         outputLine(write, result.status === "not-modified" ? "No new issue or retryable delivery" : "No new issue");
         return 0;
       }
+      // Persist the target recipient snapshot before SMTP configuration or
+      // connection. If credentials are temporarily absent, the next run can
+      // safely recover these pending deliveries even when the RSS is 304.
+      for (const issue of issues) store.queueIssueForActiveSubscribers(issue.id);
       mailer = await makeMailer(config, dependencies);
       let sent = 0;
       let failed = 0;
