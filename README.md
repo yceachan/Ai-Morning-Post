@@ -48,6 +48,8 @@ chmod 600 ~/.profile
 
 `config.toml` 只保留 `$QQ_SMTP_USERNAME`、`$QQ_SMTP_AUTH_CODE` 等引用；程序支持 `$NAME` 和 `${NAME}`。`scripts/run-job.sh` 被 cron/systemd 调用时会显式加载 `~/.profile`，profile 应只包含可由 Bash/POSIX shell 执行的 `export` 声明。更严格的生产环境可把这些变量改放在仅当前用户可读的独立 `EnvironmentFile`，再让调度器加载。
 
+wrapper 会把 `~/.local/bin` 和 `~/bin` 加入非交互服务的 `PATH`，因此通过这些目录安装的 Node 在 cron 和 systemd 中都可用。
+
 在登录 shell 没有自动加载 `~/.profile` 的环境中，可以通过同一个安全 wrapper 执行管理命令：
 
 ```bash

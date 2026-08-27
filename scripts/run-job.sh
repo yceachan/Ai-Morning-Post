@@ -66,5 +66,16 @@ exec /usr/bin/env bash -c '
   # source shell-specific profiles here: this wrapper intentionally uses Bash.
   load_profile "$HOME/.profile"
 
+  # systemd user services start with a minimal PATH. The bundled Node runtime
+  # on the target VPS is exposed through ~/.local/bin, so make the conventional
+  # user binary directories deterministic even if ~/.profile only contains
+  # credential exports.
+  export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+
+  if ! command -v node >/dev/null 2>&1; then
+    printf "ai-morning-post: node was not found after loading ~/.profile; PATH=%s\n" "$PATH" >&2
+    exit 127
+  fi
+
   exec "$@"
 ' _ node "$app_entry" --config "$app_config" "${app_arguments[@]}"
