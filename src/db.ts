@@ -34,6 +34,11 @@ export interface InsertIssueResult {
   isNew: boolean;
 }
 
+export interface RenderedIssue {
+  html: string;
+  text: string;
+}
+
 export class Store {
   readonly db: DatabaseSync;
 
@@ -170,6 +175,32 @@ export class Store {
 
   getIssuesByIds(ids: number[]): IssueRecord[] {
     return ids.map((id) => this.getIssueById(id)).filter((issue): issue is IssueRecord => issue !== null);
+  }
+
+  /**
+   * Rebuild only the derived render cache in one transaction. Subscriber and
+   * delivery state are deliberately outside the UPDATE, so this is safe to
+   * run during a template deployment without making an issue sendable again.
+   */
+  rerenderAllIssues(renderer: (issue: IssueRecord) => RenderedIssue): number {
+    const rows = this.db.prepare(`
+      SELECT * FROM issues
+      ORDER BY COALESCE(published_at, fetched_at) ASC, id ASC
+    `).all() as SqlRow[];
+    const update = this.db.prepare("UPDATE issues SET rendered_html = ?, rendered_text = ? WHERE id = ?");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const row of rows) {
+        const issue = this.mapIssue(row);
+        const rendered = renderer(issue);
+        update.run(rendered.html, rendered.text, issue.id);
+      }
+      this.db.exec("COMMIT");
+      return rows.length;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   /** Issues with a pending/failed recipient row that should be retried. */

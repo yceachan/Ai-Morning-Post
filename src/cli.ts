@@ -2,8 +2,10 @@
 import { fileURLToPath } from "node:url";
 import { assertEmailConfig, loadConfig } from "./config.js";
 import { Store } from "./db.js";
-import { createSmtpMailer, sendIssue, type Mailer } from "./mailer.js";
+import { createSmtpMailer, sendIssue, sendTestIssue, type Mailer } from "./mailer.js";
+import { renderIssueContent } from "./render.js";
 import { fetchAndStore } from "./rss.js";
+import type { IssueRecord } from "./types.js";
 
 interface ParsedArguments {
   positionals: string[];
@@ -49,7 +51,7 @@ function optionString(options: Record<string, string | boolean>, key: string): s
 }
 
 function help(): string {
-  return `AI Morning Post\n\nUsage:\n  amp subscriber add <email>\n  amp subscriber list [--all]\n  amp subscriber remove <email>\n  amp fetch\n  amp preview [--text]\n  amp smtp verify\n  amp send-latest [--dry-run]\n  amp run [--dry-run]\n\nGlobal options:\n  --config <path>  Config TOML path (default: config.toml)\n  --db <path>      Override database path\n`;
+  return `AI Morning Post\n\nUsage:\n  amp subscriber add <email>\n  amp subscriber list [--all]\n  amp subscriber remove <email>\n  amp fetch\n  amp preview [--text]\n  amp rerender\n  amp smtp verify\n  amp send-test <email> [--dry-run]\n  amp run [--dry-run]\n\nGlobal options:\n  --config <path>  Config TOML path (default: config.toml)\n  --db <path>      Override database path\n`;
 }
 
 function outputLine(write: (message: string) => void, message: string): void {
@@ -65,6 +67,16 @@ async function makeMailer(config: ReturnType<typeof loadConfig>, dependencies: C
 function issueDate(issue: { publishedAt: string | null; fetchedAt: string }): number {
   const value = Date.parse(issue.publishedAt ?? issue.fetchedAt);
   return Number.isNaN(value) ? 0 : value;
+}
+
+function renderStoredIssue(issue: IssueRecord, mode: "full" | "compact", baseUrl: string) {
+  return renderIssueContent(issue.contentHtml, {
+    title: issue.title,
+    link: issue.link,
+    publishedAt: issue.publishedAt,
+    mode,
+    baseUrl,
+  });
 }
 
 export async function runCli(args: string[] = process.argv.slice(2), dependencies: CliDependencies = {}): Promise<number> {
@@ -122,7 +134,14 @@ export async function runCli(args: string[] = process.argv.slice(2), dependencie
         issue = store.getLatestIssue();
       }
       if (!issue) throw new Error("No issue available");
-      outputLine(write, options.text === true ? issue.renderedText : issue.renderedHtml);
+      const rendered = renderStoredIssue(issue, config.email.mode, config.feed.url);
+      outputLine(write, options.text === true ? rendered.text : rendered.html);
+      return 0;
+    }
+
+    if (command === "rerender") {
+      const count = store.rerenderAllIssues((issue) => renderStoredIssue(issue, config.email.mode, config.feed.url));
+      outputLine(write, `Re-rendered ${count} issue(s); subscriber and delivery records unchanged`);
       return 0;
     }
 
@@ -134,21 +153,20 @@ export async function runCli(args: string[] = process.argv.slice(2), dependencie
       return 0;
     }
 
-    if (command === "send-latest") {
-      await fetchAndStore(config.feed, store, config.email.mode, { fetchImpl: dependencies.fetchImpl });
+    if (command === "send-test") {
+      const recipient = positionals[1];
+      if (!recipient) throw new Error("Usage: amp send-test <email> [--dry-run]");
       const issue = store.getLatestIssue();
-      if (!issue) throw new Error("No issue available");
+      if (!issue) throw new Error("No issue available; run `amp fetch` first");
+      const rendered = renderStoredIssue(issue, config.email.mode, config.feed.url);
       if (options["dry-run"] === true) {
-        outputLine(write, `Dry-run: would send latest issue to ${store.listSubscribers().length} recipient(s)`);
+        outputLine(write, `Dry-run: would send freshly rendered test issue to ${recipient}`);
         return 0;
       }
-      store.queueIssueForActiveSubscribers(issue.id);
       mailer = await makeMailer(config, dependencies);
-      const result = await sendIssue(store, issue, mailer, config.email.subjectPrefix, {
-        includeAllActiveSubscribers: true,
-      });
-      outputLine(write, `Sent latest issue: ${result.sent} sent, ${result.failed} failed, ${result.attempted} recipient(s)`);
-      return result.failed > 0 ? 1 : 0;
+      await sendTestIssue(issue, rendered, recipient, mailer, config.email.subjectPrefix);
+      outputLine(write, `Sent freshly rendered test issue to ${recipient}; delivery records unchanged`);
+      return 0;
     }
 
     if (command === "run") {

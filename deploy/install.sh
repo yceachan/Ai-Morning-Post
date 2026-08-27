@@ -88,7 +88,7 @@ if ((dry_run)); then
   if ((skip_build)); then
     say 'dry-run: skip npm install/build'
   else
-    say 'dry-run: run npm ci (or npm install when package-lock.json is absent) and npm run build'
+    say 'dry-run: install dependencies, build, and transactionally re-render cached issues'
   fi
   if [[ "$scheduler" == cron ]]; then
     say 'dry-run: replace the managed cron entry with a single */15 run'
@@ -127,6 +127,9 @@ if ((skip_build == 0)); then
     npm install
   fi
   npm run build
+  # Template code is mutable while issue content and delivery history are not.
+  # Refresh only the derived HTML/text cache before the scheduler can run.
+  node dist/cli.js --config config.toml rerender
 else
   say 'skipping dependency installation and build by request'
 fi

@@ -219,6 +219,78 @@ test("run dry-run never creates a mailer or delivery rows", async () => {
   rmSync(directory, { recursive: true, force: true });
 });
 
+test("preview and send-test always use the current renderer without delivery state", async () => {
+  const { directory, path: configPath } = tempPath("config.toml");
+  const dbPath = join(directory, "db.sqlite");
+  writeFileSync(configPath, `[database]\npath = "${dbPath.replaceAll("\\", "/")}"\n`);
+  const setup = new Store(dbPath);
+  setup.insertIssue({
+    guid: "visual-acceptance",
+    title: "Visual acceptance",
+    link: "https://example.test/visual",
+    publishedAt: new Date().toISOString(),
+    contentHtml: "<h2>要闻</h2><blockquote>Current body</blockquote>",
+    contentText: "Current body",
+  }, "<html>stale-render-cache</html>", "stale-render-cache");
+  setup.close();
+
+  const preview: string[] = [];
+  await runCli(["--config", configPath, "preview"], { stdout: (message) => preview.push(message) });
+  assert.match(preview.join(""), /background:#f0ebe4/);
+  assert.doesNotMatch(preview.join(""), /stale-render-cache/);
+
+  const messages: OutgoingMessage[] = [];
+  await runCli(["--config", configPath, "send-test", "Review@Example.com"], {
+    mailer: { async send(message) { messages.push(message); return {}; } },
+  });
+  await runCli(["--config", configPath, "send-test", "review@example.com"], {
+    mailer: { async send(message) { messages.push(message); return {}; } },
+  });
+  assert.equal(messages.length, 2);
+  assert.equal(messages[0].to, "review@example.com");
+  assert.match(messages[0].subject, /^\[TEST\]/);
+  assert.match(messages[0].html, /background:#f0ebe4/);
+  assert.notEqual(messages[0].messageId, messages[1].messageId);
+
+  const verify = new Store(dbPath);
+  const deliveryCount = Number((verify.db.prepare("SELECT COUNT(*) AS count FROM deliveries").get() as { count: number }).count);
+  assert.equal(deliveryCount, 0);
+  assert.match(verify.getLatestIssue()?.renderedHtml ?? "", /stale-render-cache/);
+  verify.close();
+  rmSync(directory, { recursive: true, force: true });
+});
+
+test("rerender refreshes cached markup without changing delivery history", async () => {
+  const { directory, path: configPath } = tempPath("config.toml");
+  const dbPath = join(directory, "db.sqlite");
+  writeFileSync(configPath, `[database]\npath = "${dbPath.replaceAll("\\", "/")}"\n`);
+  const setup = new Store(dbPath);
+  const subscriber = setup.upsertSubscriber("sent@example.com");
+  const inserted = setup.insertIssue({
+    guid: "safe-rerender",
+    title: "Safe rerender",
+    link: "https://example.test/rerender",
+    publishedAt: new Date().toISOString(),
+    contentHtml: "<blockquote>Rebuild me</blockquote>",
+    contentText: "Rebuild me",
+  }, "<html>old-template</html>", "old-template");
+  const delivery = setup.ensureDelivery(inserted.id, subscriber.id);
+  setup.markDeliverySent(delivery.id, "provider-original");
+  const before = setup.getDelivery(inserted.id, subscriber.id);
+  setup.close();
+
+  const output: string[] = [];
+  await runCli(["--config", configPath, "rerender"], { stdout: (message) => output.push(message) });
+  assert.match(output.join(""), /delivery records unchanged/);
+
+  const verify = new Store(dbPath);
+  assert.match(verify.getIssueById(inserted.id)?.renderedHtml ?? "", /background:#f0ebe4/);
+  assert.doesNotMatch(verify.getIssueById(inserted.id)?.renderedHtml ?? "", /old-template/);
+  assert.deepEqual(verify.getDelivery(inserted.id, subscriber.id), before);
+  verify.close();
+  rmSync(directory, { recursive: true, force: true });
+});
+
 test("smtp verify authenticates without sending a message", async () => {
   const { directory, path: configPath } = tempPath("config.toml");
   writeFileSync(configPath, `[database]\npath = "${join(directory, "db.sqlite").replaceAll("\\", "/")}"\n`);

@@ -8,7 +8,7 @@
 RSS --15 分钟轮询--> SQLite 去重/记录 --渲染--> QQ Mail SMTP --逐个收件人--> 日报
 ```
 
-首次 `fetch` 只记录当前 RSS 期刊，不会追发历史内容；发送需要显式运行 `send-latest`，之后由定时 `run` 处理新一期。数据库唯一约束避免同一期刊重复发送。
+首次 `fetch` 只记录当前 RSS 期刊，不会追发历史内容；验收邮件使用独立的 `send-test`，之后由定时 `run` 处理新一期。数据库唯一约束避免同一期刊重复发送。
 
 ## 本地运行
 
@@ -21,6 +21,7 @@ npm run build
 
 # 预览不会连接 SMTP，也不会写入发送记录
 node dist/cli.js --config config.toml preview
+node dist/cli.js --config config.toml send-test yceachan@foxmail.com
 node dist/cli.js --config config.toml run --dry-run
 ```
 
@@ -32,7 +33,17 @@ node dist/cli.js --config config.toml subscriber list
 node dist/cli.js --config config.toml smtp verify
 ```
 
-常用命令还包括 `fetch`、`smtp verify`、`send-latest`、`run`、`subscriber remove EMAIL`。执行 `node dist/cli.js --help` 查看当前版本的完整帮助。
+`preview` 和 `send-test EMAIL` 都会基于数据库中的 RSS 原文，使用当前代码即时渲染，不读取 `rendered_html` 缓存；测试邮件不会创建或修改投递记录，可以反复验收。`run` 是唯一的定时/正式推送入口，继续使用投递记录完成去重和失败重试。
+
+模板升级后可手工执行 `node dist/cli.js --config config.toml rerender`，在单个事务中重建所有历史期刊的 `rendered_html` / `rendered_text`，不会改动订阅者或投递记录。`deploy/install.sh` 在正常构建后会自动执行这一步。
+
+常用命令还包括 `fetch`、`smtp verify`、`rerender`、`send-test EMAIL`、`run`、`subscriber remove EMAIL`。执行 `node dist/cli.js --help` 查看当前版本的完整帮助。
+
+## 为什么原型仍保留 SQLite
+
+SQLite 的核心价值不是缓存邮件 HTML，而是保存定时任务必须共享的少量状态：RSS 的 ETag、期刊 GUID 去重、收件人名单，以及每个“期刊 × 收件人”的 pending/sent/failed 投递账本。没有这层持久状态，15 分钟轮询、进程中断和 SMTP 临时失败很容易造成漏发或重复发送。
+
+因此现阶段保留单文件 SQLite，比把同样的状态拆成 JSON、锁文件和发送标记更简单可靠。`rendered_html` / `rendered_text` 只是可重建的派生缓存，不是数据库存在的理由；测试入口已经不再读取它们，部署时也会统一刷新。若原型以后改成“仅一个固定收件人、允许偶尔重复、无失败重试”，才适合连同投递账本一起移除数据库。
 
 ## QQ 邮箱发件机器人
 
@@ -70,6 +81,7 @@ bash deploy/install.sh
 # 仅首次执行；之后重复执行会保留已有 config.toml 和数据库
 node dist/cli.js --config config.toml subscriber add yceachan@foxmail.com
 node dist/cli.js --config config.toml preview
+node dist/cli.js --config config.toml send-test yceachan@foxmail.com
 node dist/cli.js --config config.toml run --dry-run
 ```
 

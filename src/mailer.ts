@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import nodemailer from "nodemailer";
 import { assertEmailConfig } from "./config.js";
+import { normalizeEmail } from "./db.js";
 import type { EmailConfig, IssueRecord, SendResult } from "./types.js";
 import { Store } from "./db.js";
+import type { RenderedContent } from "./render.js";
 
 export interface OutgoingMessage {
   to: string;
@@ -75,6 +77,29 @@ function stableMessageId(issue: IssueRecord, subscriberEmail: string): string {
 function subjectFor(issue: IssueRecord, prefix: string): string {
   const cleanPrefix = prefix.trim();
   return cleanPrefix ? `[${cleanPrefix}] ${issue.title}` : issue.title;
+}
+
+/**
+ * Send a repeatable acceptance email without touching the delivery ledger.
+ * A unique Message-ID keeps separate visual checks from being folded into one
+ * conversation by the mailbox provider.
+ */
+export async function sendTestIssue(
+  issue: IssueRecord,
+  rendered: RenderedContent,
+  recipient: string,
+  mailer: Mailer,
+  subjectPrefix: string,
+): Promise<{ messageId?: string }> {
+  const to = normalizeEmail(recipient);
+  const nonce = `${Date.now()}-${createHash("sha256").update(`${to}-${Math.random()}`).digest("hex").slice(0, 12)}`;
+  return mailer.send({
+    to,
+    subject: `[TEST] ${subjectFor(issue, subjectPrefix)}`,
+    html: rendered.html,
+    text: rendered.text,
+    messageId: `amp-test-${issue.id}-${nonce}@ai-morning-post.local`,
+  });
 }
 
 export async function sendIssue(
