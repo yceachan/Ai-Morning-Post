@@ -49,7 +49,7 @@ function optionString(options: Record<string, string | boolean>, key: string): s
 }
 
 function help(): string {
-  return `AI Morning Post\n\nUsage:\n  amp subscriber add <email>\n  amp subscriber list [--all]\n  amp subscriber remove <email>\n  amp fetch\n  amp preview [--text]\n  amp send-latest [--dry-run]\n  amp run [--dry-run]\n\nGlobal options:\n  --config <path>  Config TOML path (default: config.toml)\n  --db <path>      Override database path\n`;
+  return `AI Morning Post\n\nUsage:\n  amp subscriber add <email>\n  amp subscriber list [--all]\n  amp subscriber remove <email>\n  amp fetch\n  amp preview [--text]\n  amp smtp verify\n  amp send-latest [--dry-run]\n  amp run [--dry-run]\n\nGlobal options:\n  --config <path>  Config TOML path (default: config.toml)\n  --db <path>      Override database path\n`;
 }
 
 function outputLine(write: (message: string) => void, message: string): void {
@@ -126,6 +126,14 @@ export async function runCli(args: string[] = process.argv.slice(2), dependencie
       return 0;
     }
 
+    if (command === "smtp" && positionals[1] === "verify") {
+      mailer = await makeMailer(config, dependencies);
+      if (!mailer.verify) throw new Error("Configured mailer does not support SMTP verification");
+      await mailer.verify();
+      outputLine(write, "SMTP connection and authentication verified");
+      return 0;
+    }
+
     if (command === "send-latest") {
       await fetchAndStore(config.feed, store, config.email.mode, { fetchImpl: dependencies.fetchImpl });
       const issue = store.getLatestIssue();
@@ -192,10 +200,31 @@ export async function main(): Promise<void> {
   try {
     process.exitCode = await runCli();
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = formatError(error);
     process.stderr.write(`Error: ${message}\n`);
     process.exitCode = 1;
   }
+}
+
+function formatError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const parts = [error.message];
+  let cause: unknown = (error as Error & { cause?: unknown }).cause;
+  let depth = 0;
+  while (cause && depth < 3) {
+    if (cause instanceof Error) {
+      const code = (cause as Error & { code?: unknown }).code;
+      const detail = `${typeof code === "string" ? `${code}: ` : ""}${cause.message}`;
+      if (!parts.includes(detail)) parts.push(detail);
+      cause = (cause as Error & { cause?: unknown }).cause;
+    } else {
+      const detail = String(cause);
+      if (!parts.includes(detail)) parts.push(detail);
+      break;
+    }
+    depth += 1;
+  }
+  return parts.join("; caused by ");
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

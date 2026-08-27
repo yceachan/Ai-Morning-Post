@@ -14,10 +14,12 @@ export interface OutgoingMessage {
 
 export interface Mailer {
   send(message: OutgoingMessage): Promise<{ messageId?: string }>;
+  verify?(): Promise<boolean>;
 }
 
 export interface SmtpTransportLike {
   sendMail(message: OutgoingMessage & { from: string; headers: Record<string, string> }): Promise<{ messageId?: string }>;
+  verify?: () => Promise<boolean>;
   close?: () => void;
 }
 
@@ -44,6 +46,11 @@ export class SmtpMailer implements Mailer {
         "X-AI-Morning-Post-Issue": message.messageId,
       },
     });
+  }
+
+  async verify(): Promise<boolean> {
+    if (!this.transport.verify) throw new Error("SMTP transport does not support verification");
+    return this.transport.verify();
   }
 
   close(): void {

@@ -190,6 +190,23 @@ test("run dry-run never creates a mailer or delivery rows", async () => {
   rmSync(directory, { recursive: true, force: true });
 });
 
+test("smtp verify authenticates without sending a message", async () => {
+  const { directory, path: configPath } = tempPath("config.toml");
+  writeFileSync(configPath, `[database]\npath = "${join(directory, "db.sqlite").replaceAll("\\", "/")}"\n`);
+  let verified = false;
+  let sent = false;
+  const result = await runCli(["--config", configPath, "smtp", "verify"], {
+    mailer: {
+      async verify() { verified = true; return true; },
+      async send() { sent = true; return {}; },
+    },
+  });
+  assert.equal(result, 0);
+  assert.equal(verified, true);
+  assert.equal(sent, false);
+  rmSync(directory, { recursive: true, force: true });
+});
+
 test("run retries failed deliveries when RSS returns 304", async () => {
   const { directory, path: configPath } = tempPath("config.toml");
   const dbPath = join(directory, "db.sqlite");

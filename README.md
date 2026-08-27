@@ -8,7 +8,7 @@
 RSS --15 分钟轮询--> SQLite 去重/记录 --渲染--> QQ Mail SMTP --逐个收件人--> 日报
 ```
 
-首次 `fetch` 只记录当前 RSS 期刊，不会追发历史内容；发送需要显式运行 `send-latest` 或 `run --once`。数据库唯一约束避免同一期刊重复发送。
+首次 `fetch` 只记录当前 RSS 期刊，不会追发历史内容；发送需要显式运行 `send-latest`，之后由定时 `run` 处理新一期。数据库唯一约束避免同一期刊重复发送。
 
 ## 本地运行
 
@@ -29,9 +29,10 @@ node dist/cli.js --config config.toml run --dry-run
 ```bash
 node dist/cli.js --config config.toml subscriber add yceachan@foxmail.com
 node dist/cli.js --config config.toml subscriber list
+node dist/cli.js --config config.toml smtp verify
 ```
 
-常用命令还包括 `fetch`、`send-latest`、`run --once`、`subscriber remove EMAIL`。执行 `node dist/cli.js --help` 查看当前版本的完整帮助。
+常用命令还包括 `fetch`、`smtp verify`、`send-latest`、`run`、`subscriber remove EMAIL`。执行 `node dist/cli.js --help` 查看当前版本的完整帮助。
 
 ## QQ 邮箱发件机器人
 
