@@ -106,6 +106,49 @@ function addClassToOpeningTag(html: string, tagName: string, className: string):
   return html.replace(pattern, `<${tagName} class="${className}"$1>`);
 }
 
+function appendInlineStyle(attributes: string, style: string): string {
+  const existing = /\sstyle=("([^"]*)"|'([^']*)')/i.exec(attributes);
+  if (!existing) return `${attributes} style="${style}"`;
+  const current = existing[2] ?? existing[3] ?? "";
+  return attributes.replace(existing[0], ` style="${current.replace(/;?\s*$/, ";")}${style}"`);
+}
+
+function styleOpeningTags(html: string, tagName: string, style: string, className?: string): string {
+  const pattern = new RegExp(`<${tagName}([^>]*)>`, "gi");
+  return html.replace(pattern, (openingTag, attributes: string) => {
+    if (className && !attributes.includes(`class="${className}"`)) return openingTag;
+    return `<${tagName}${appendInlineStyle(attributes, style)}>`;
+  });
+}
+
+const OVERVIEW_HEADING_INLINE = "margin:26px 0 14px;padding:0 0 9px;border:0;border-bottom:1px solid #e5ded4;color:#8f857b;font-family:'Avenir Next','Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',Arial,sans-serif;font-size:14px;line-height:22px;font-weight:700;letter-spacing:.08em";
+const SUMMARY_HEADING_INLINE = "display:block;margin:26px 0 12px;padding:2px 0 2px 10px;border:0;border-left:3px solid #a45d47;color:#2c2926;font-family:'Avenir Next','Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',Arial,sans-serif;font-size:18px;line-height:26px;font-weight:700;letter-spacing:.01em";
+const LIST_INLINE = "margin:0 0 26px;padding:0 0 0 24px;color:#2c2926";
+const LIST_ITEM_INLINE = "margin:0 0 11px;padding:0 0 0 3px;color:#2c2926;font-size:16px;line-height:28px";
+const CODE_INLINE = "display:inline-block;padding:1px 5px;border-radius:4px;background:#f0ebe4;color:#755342;font-family:'SFMono-Regular','Cascadia Code','Roboto Mono',Consolas,monospace;font-size:14px;line-height:20px;white-space:nowrap";
+
+function styleReferenceBadges(html: string): string {
+  return html.replace(
+    /(<a\b[^>]*>\s*↗\s*<\/a>)\s*(<code\b[^>]*>\s*#\d+\s*<\/code>)/gi,
+    (_match, rawLink: string, code: string) => {
+      const link = rawLink.replace(/<a\b([^>]*)>/i, (_opening, attributes: string) => (
+        `<a${appendInlineStyle(attributes, "display:inline-block;color:#a45d47;text-decoration:underline;text-decoration-color:#c4a197;white-space:nowrap")}>`
+      ));
+      return `<span class="reference-badge" style="display:inline-block;white-space:nowrap">${link}&nbsp;${code}</span>`;
+    },
+  );
+}
+
+function inlineCriticalEmailStyles(html: string): string {
+  let styled = styleOpeningTags(html, "h2", OVERVIEW_HEADING_INLINE, "overview-heading");
+  styled = styleOpeningTags(styled, "h3", SUMMARY_HEADING_INLINE, "summary-heading");
+  styled = styleOpeningTags(styled, "ul", LIST_INLINE);
+  styled = styleOpeningTags(styled, "ol", LIST_INLINE);
+  styled = styleOpeningTags(styled, "li", LIST_ITEM_INLINE);
+  styled = styleOpeningTags(styled, "code", CODE_INLINE);
+  return styleReferenceBadges(styled);
+}
+
 function decorateContent(html: string): string {
   let decorated = removeContentHeading(html);
   decorated = decorated.replace(/<h2([^>]*)>\s*概览\s*<\/h2>/gi, '<h2 class="overview-heading"$1>概览</h2>');
@@ -144,13 +187,13 @@ const EMAIL_STYLES = `
   .email-content p { margin:0 0 16px; }
   .email-content .content-title { margin:0 0 18px; color:#2c2926; font-family:"Iowan Old Style","Baskerville","STSong","Noto Serif CJK SC",Georgia,"Times New Roman",serif; font-size:24px; line-height:1.35; font-weight:600; letter-spacing:-.02em; }
   .email-content .section-heading { margin:38px 0 14px; padding:18px 0 0; border-top:1px solid #e5ded4; color:#2c2926; font-family:"Iowan Old Style","Baskerville","STSong","Noto Serif CJK SC",Georgia,"Times New Roman",serif; font-size:22px; line-height:1.4; font-weight:600; letter-spacing:-.02em; }
-  .email-content .overview-heading { margin:24px 0 10px; padding:0 0 8px; border:0; border-bottom:1px solid #e5ded4; color:#968c81; font-size:14px; line-height:22px; font-weight:650; letter-spacing:.08em; }
-  .email-content .summary-heading { margin:22px 0 8px; color:#2c2926; font-size:16px; line-height:1.55; font-weight:650; }
+  .email-content .overview-heading { margin:26px 0 14px; padding:0 0 9px; border:0; border-bottom:1px solid #e5ded4; color:#8f857b; font-size:14px; line-height:22px; font-weight:700; letter-spacing:.08em; }
+  .email-content .summary-heading { display:block; margin:26px 0 12px; padding:2px 0 2px 10px; border-left:3px solid #a45d47; color:#2c2926; font-size:18px; line-height:26px; font-weight:700; letter-spacing:.01em; }
   .email-content .article-heading { margin:30px 0 12px; color:#2c2926; font-size:18px; line-height:1.55; font-weight:650; }
   .email-content .article-heading a { color:inherit !important; text-decoration:none !important; }
   .email-content h4, .email-content h5, .email-content h6 { margin:24px 0 10px; color:#2c2926; font-size:16px; line-height:1.55; }
-  .email-content ul, .email-content ol { margin:0 0 22px; padding-left:22px; }
-  .email-content li { margin:0 0 8px; padding-left:2px; }
+  .email-content ul, .email-content ol { margin:0 0 26px; padding-left:24px; }
+  .email-content li { margin:0 0 11px; padding-left:3px; line-height:28px; }
   .email-content li:last-child { margin-bottom:0; }
   .email-content a { color:#a45d47; text-decoration:underline; text-decoration-color:#c4a197; text-underline-offset:.16em; }
   .email-content blockquote { margin:0 0 20px; padding:12px 14px; border-left:3px solid #d2c8bc; background:#f0ebe4; color:#6e665e; font-size:14px; line-height:1.75; }
@@ -169,7 +212,7 @@ const EMAIL_STYLES = `
     .email-title { font-size:24px !important; line-height:1.3 !important; }
     .email-content { font-size:16px !important; line-height:1.82 !important; }
     .email-content .section-heading { margin-top:34px !important; padding-top:16px !important; font-size:21px !important; }
-    .email-content .summary-heading { margin-top:18px !important; font-size:16px !important; }
+    .email-content .summary-heading { margin-top:24px !important; font-size:18px !important; line-height:26px !important; }
     .email-content .article-heading { margin-top:26px !important; font-size:18px !important; line-height:1.6 !important; }
     .email-content blockquote { margin-bottom:18px !important; padding:11px 12px !important; }
     .email-content img { margin-top:18px !important; margin-bottom:22px !important; border-radius:6px !important; }
@@ -193,7 +236,7 @@ export function renderIssueContent(rawHtml: string, input: RenderIssueInput & { 
     safe = safe.replace(/<figure\b[^>]*>.*?<\/figure>/gis, "").replace(/<img\b[^>]*>/gi, "");
   }
   safe = safe.replace(/<p>\s*<\/p>/gi, "");
-  safe = styleImages(decorateContent(safe));
+  safe = inlineCriticalEmailStyles(styleImages(decorateContent(safe)));
   const displayTitle = contentTitle ?? input.title;
   const title = escapeHtml(displayTitle);
   const link = escapeHtml(input.link);

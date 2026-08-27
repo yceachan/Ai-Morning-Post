@@ -74,7 +74,7 @@ test("renderer keeps long issues readable on mobile", () => {
   const rendered = renderIssueContent(
     `<p><img src="/cover.png" width="5076" height="2160"></p>
      <h1>Reading issue</h1>
-     <h2>概览</h2><h3>要闻</h3><ul><li>一条摘要</li></ul>
+     <h2>概览</h2><h3>要闻</h3><ul><li>一条摘要 <a href="/source">↗</a> <code>#1</code></li></ul>
      <hr><h2>要闻</h2><h3><a href="/story">文章标题</a> <code>#1</code></h3>
      <blockquote>文章摘要</blockquote><p>文章正文。</p>`,
     {
@@ -87,8 +87,12 @@ test("renderer keeps long issues readable on mobile", () => {
 
   assert.equal((rendered.html.match(/<h1\b/g) ?? []).length, 1, "the shell title should not be duplicated in the feed body");
   assert.match(rendered.html, /<h1 class="email-title"[^>]*>Reading issue<\/h1>/);
-  assert.match(rendered.html, /<h2 class="overview-heading">概览<\/h2>/);
-  assert.match(rendered.html, /<h3 class="summary-heading">要闻<\/h3>/);
+  assert.match(rendered.html, /<h2 class="overview-heading" style="[^"]*font-weight:700/);
+  assert.match(rendered.html, /<h3 class="summary-heading" style="[^"]*border-left:3px solid #a45d47[^"]*font-size:18px/);
+  assert.match(rendered.html, /<ul style="[^"]*padding:0 0 0 24px/);
+  assert.match(rendered.html, /<li style="[^"]*line-height:28px/);
+  assert.match(rendered.html, /<span class="reference-badge" style="display:inline-block;white-space:nowrap">/);
+  assert.match(rendered.html, /<code style="[^"]*white-space:nowrap">#1<\/code>/);
   assert.match(rendered.html, /<h2 class="section-heading">要闻<\/h2>/);
   assert.match(rendered.html, /<h3 class="article-heading"><a/);
   assert.match(rendered.html, /style="color:#2c2926;text-decoration:none"/);
