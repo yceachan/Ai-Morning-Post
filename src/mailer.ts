@@ -107,16 +107,18 @@ export async function sendIssue(
   issue: IssueRecord,
   mailer: Mailer,
   subjectPrefix: string,
-  options: { includeAllActiveSubscribers?: boolean } = {},
+  options: { includeAllActiveSubscribers?: boolean; onlyExistingDeliveries?: boolean } = {},
 ): Promise<SendResult> {
   const subscribers = store.listSubscribers();
   const existingDeliveries = new Map(
     subscribers.map((subscriber) => [subscriber.id, store.getDelivery(issue.id, subscriber.id)]),
   );
   const hasExistingDeliveries = [...existingDeliveries.values()].some((delivery) => delivery !== null);
-  const targets = options.includeAllActiveSubscribers || !hasExistingDeliveries
-    ? subscribers
-    : subscribers.filter((subscriber) => existingDeliveries.get(subscriber.id) !== null);
+  const targets = options.onlyExistingDeliveries
+    ? subscribers.filter((subscriber) => existingDeliveries.get(subscriber.id) !== null)
+    : options.includeAllActiveSubscribers || !hasExistingDeliveries
+      ? subscribers
+      : subscribers.filter((subscriber) => existingDeliveries.get(subscriber.id) !== null);
   let sent = 0;
   let failed = 0;
   let attempted = 0;

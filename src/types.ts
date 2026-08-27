@@ -45,6 +45,7 @@ export interface SubscriberRecord {
   id: number;
   email: string;
   active: boolean;
+  deliveryDays: number;
   createdAt: string;
   updatedAt: string;
 }

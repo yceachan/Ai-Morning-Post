@@ -33,6 +33,21 @@ node dist/cli.js --config config.toml subscriber list
 node dist/cli.js --config config.toml smtp verify
 ```
 
+每个收件人可以独立配置接收星期；未指定时默认为 `everyday`：
+
+```bash
+# 周一到周五
+node dist/cli.js --config config.toml subscriber add work@example.com --days work
+
+# 修改已有收件人：仅周六、周日
+node dist/cli.js --config config.toml subscriber schedule work@example.com weekend
+
+# 自定义周一到周日：1 表示接收，0 表示跳过
+node dist/cli.js --config config.toml subscriber schedule work@example.com "7b'10101_10"
+```
+
+数据库使用一个整数掩码的低七位，从高到低依次表示周一至周日：`11111_11` 是 `everyday`，`11111_00` 是 `work`，`00000_11` 是 `weekend`，第八位保留。筛选使用 `Asia/Singapore` 当天日期，只在新期刊首次建立投递记录时执行；不符合当天配置的期刊会跳过，不会延迟到下一个接收日。已经建立的 pending/failed 投递会继续重试，不因跨日而丢失。
+
 `preview` 和 `send-test EMAIL` 都会基于数据库中的 RSS 原文，使用当前代码即时渲染，不读取 `rendered_html` 缓存；测试邮件不会创建或修改投递记录，可以反复验收。`run` 是唯一的定时/正式推送入口，继续使用投递记录完成去重和失败重试。
 
 模板升级后可手工执行 `node dist/cli.js --config config.toml rerender`，在单个事务中重建所有历史期刊的 `rendered_html` / `rendered_text`，不会改动订阅者或投递记录。`deploy/install.sh` 在正常构建后会自动执行这一步。

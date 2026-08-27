@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { loadConfig } from "../src/config.js";
 import { Store } from "../src/db.js";
@@ -9,6 +10,14 @@ import { sendIssue, type Mailer, type OutgoingMessage } from "../src/mailer.js";
 import { renderIssueContent } from "../src/render.js";
 import { fetchAndStore, parseFeed } from "../src/rss.js";
 import { runCli } from "../src/cli.js";
+import {
+  deliveryDayBit,
+  EVERYDAY_DELIVERY_DAYS,
+  formatDeliveryDays,
+  parseDeliveryDays,
+  WEEKEND_DELIVERY_DAYS,
+  WORK_DELIVERY_DAYS,
+} from "../src/schedule.js";
 
 const sampleXml = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
@@ -49,6 +58,71 @@ from = "$QQ_USER"
   assert.equal(config.email.password, "secret");
   assert.equal(config.database.path, join(directory, "newsletter.sqlite"));
   assert.equal(readFileSync(path, "utf8").includes("secret"), false);
+  rmSync(directory, { recursive: true, force: true });
+});
+
+test("delivery day aliases and custom masks use Monday-to-Sunday bit order", () => {
+  assert.equal(parseDeliveryDays("everyday"), EVERYDAY_DELIVERY_DAYS);
+  assert.equal(parseDeliveryDays("work"), WORK_DELIVERY_DAYS);
+  assert.equal(parseDeliveryDays("weekend"), WEEKEND_DELIVERY_DAYS);
+  assert.equal(parseDeliveryDays("7b'10101_10"), 0b10101_10);
+  assert.equal(parseDeliveryDays("7b1010110"), 0b10101_10);
+  assert.equal(formatDeliveryDays(0b10101_10), "7b'10101_10");
+  assert.equal(deliveryDayBit(new Date("2026-08-31T00:00:00Z")), 0b10000_00, "Monday");
+  assert.equal(deliveryDayBit(new Date("2026-08-30T12:00:00Z")), 0b00000_01, "Sunday");
+  assert.throws(() => parseDeliveryDays("weekday"), /everyday, work, weekend/);
+});
+
+test("existing subscriber databases migrate to everyday delivery", () => {
+  const { directory, path } = tempPath("legacy.sqlite");
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`
+    CREATE TABLE subscribers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    INSERT INTO subscribers (email, active, created_at, updated_at)
+    VALUES ('legacy@example.com', 1, 'before', 'before');
+  `);
+  legacy.close();
+
+  const migrated = new Store(path);
+  assert.equal(migrated.getSubscriber("legacy@example.com")?.deliveryDays, EVERYDAY_DELIVERY_DAYS);
+  migrated.close();
+  rmSync(directory, { recursive: true, force: true });
+});
+
+test("subscriber schedules filter first-time delivery queues", () => {
+  const { directory, path } = tempPath("schedule.sqlite");
+  const store = new Store(path);
+  const everyday = store.upsertSubscriber("everyday@example.com");
+  const work = store.upsertSubscriber("work@example.com", WORK_DELIVERY_DAYS);
+  const weekend = store.upsertSubscriber("weekend@example.com", WEEKEND_DELIVERY_DAYS);
+  const monday = store.upsertSubscriber("monday@example.com", parseDeliveryDays("7b'10000_00"));
+  const mondayIssue = store.insertIssue({
+    guid: "monday-issue", title: "Monday", link: "", publishedAt: null,
+    contentHtml: "<p>Monday</p>", contentText: "Monday",
+  }, "Monday", "Monday");
+  const saturdayIssue = store.insertIssue({
+    guid: "saturday-issue", title: "Saturday", link: "", publishedAt: null,
+    contentHtml: "<p>Saturday</p>", contentText: "Saturday",
+  }, "Saturday", "Saturday");
+
+  assert.equal(store.queueIssueForEligibleSubscribers(mondayIssue.id, 0b10000_00), 3);
+  assert.ok(store.getDelivery(mondayIssue.id, everyday.id));
+  assert.ok(store.getDelivery(mondayIssue.id, work.id));
+  assert.ok(store.getDelivery(mondayIssue.id, monday.id));
+  assert.equal(store.getDelivery(mondayIssue.id, weekend.id), null);
+
+  assert.equal(store.queueIssueForEligibleSubscribers(saturdayIssue.id, 0b00000_10), 2);
+  assert.ok(store.getDelivery(saturdayIssue.id, everyday.id));
+  assert.ok(store.getDelivery(saturdayIssue.id, weekend.id));
+  assert.equal(store.getDelivery(saturdayIssue.id, work.id), null);
+  assert.equal(store.getDelivery(saturdayIssue.id, monday.id), null);
+  store.close();
   rmSync(directory, { recursive: true, force: true });
 });
 
@@ -223,6 +297,54 @@ test("run dry-run never creates a mailer or delivery rows", async () => {
   rmSync(directory, { recursive: true, force: true });
 });
 
+test("subscriber CLI configures and displays delivery schedules", async () => {
+  const { directory, path: configPath } = tempPath("config.toml");
+  const dbPath = join(directory, "db.sqlite");
+  writeFileSync(configPath, `[database]\npath = "${dbPath.replaceAll("\\", "/")}"\n`);
+  const output: string[] = [];
+  await runCli(["--config", configPath, "subscriber", "add", "days@example.com", "--days", "work"], {
+    stdout: (message) => output.push(message),
+  });
+  await runCli(["--config", configPath, "subscriber", "add", "days@example.com"], {
+    stdout: (message) => output.push(message),
+  });
+  await runCli(["--config", configPath, "subscriber", "schedule", "days@example.com", "7b'00000_11"], {
+    stdout: (message) => output.push(message),
+  });
+  await runCli(["--config", configPath, "subscriber", "list"], {
+    stdout: (message) => output.push(message),
+  });
+  assert.match(output.join(""), /Added days@example\.com \(work\)/);
+  assert.match(output.join(""), /Scheduled days@example\.com: weekend/);
+  assert.match(output.join(""), /active\tdays@example\.com\tweekend/);
+  rmSync(directory, { recursive: true, force: true });
+});
+
+test("scheduled run skips a work-only subscriber on Saturday", async () => {
+  const { directory, path: configPath } = tempPath("config.toml");
+  const dbPath = join(directory, "db.sqlite");
+  writeFileSync(configPath, `[feed]\nurl = "https://daily.juya.uk/rss.xml"\n[database]\npath = "${dbPath.replaceAll("\\", "/")}"\n`);
+  const setup = new Store(dbPath);
+  setup.upsertSubscriber("work@example.com", WORK_DELIVERY_DAYS);
+  setup.close();
+  let mailerCalled = false;
+  const output: string[] = [];
+  const result = await runCli(["--config", configPath, "run"], {
+    fetchImpl: async () => new Response(sampleXml, { status: 200 }),
+    now: () => new Date("2026-08-29T00:00:00Z"),
+    mailer: { async send() { mailerCalled = true; return {}; } },
+    stdout: (message) => output.push(message),
+  });
+  assert.equal(result, 0);
+  assert.equal(mailerCalled, false);
+  assert.match(output.join(""), /No eligible recipient/);
+  const verify = new Store(dbPath);
+  const deliveryCount = Number((verify.db.prepare("SELECT COUNT(*) AS count FROM deliveries").get() as { count: number }).count);
+  assert.equal(deliveryCount, 0);
+  verify.close();
+  rmSync(directory, { recursive: true, force: true });
+});
+
 test("preview and send-test always use the current renderer without delivery state", async () => {
   const { directory, path: configPath } = tempPath("config.toml");
   const dbPath = join(directory, "db.sqlite");
@@ -317,7 +439,8 @@ test("run retries failed deliveries when RSS returns 304", async () => {
   const dbPath = join(directory, "db.sqlite");
   writeFileSync(configPath, `[feed]\nurl = "https://daily.juya.uk/rss.xml"\n[database]\npath = "${dbPath.replaceAll("\\", "/")}\"\n`);
   const store = new Store(dbPath);
-  const subscriber = store.upsertSubscriber("yceachan@foxmail.com");
+  const subscriber = store.upsertSubscriber("yceachan@foxmail.com", WORK_DELIVERY_DAYS);
+  const weekendSubscriber = store.upsertSubscriber("weekend@example.com", WEEKEND_DELIVERY_DAYS);
   const inserted = store.insertIssue({
     guid: "retry-issue",
     title: "Retry issue",
@@ -334,11 +457,15 @@ test("run retries failed deliveries when RSS returns 304", async () => {
   const sent: OutgoingMessage[] = [];
   const result = await runCli(["--config", configPath, "run"], {
     fetchImpl: async () => new Response(null, { status: 304 }),
+    now: () => new Date("2026-08-29T00:00:00Z"),
     mailer: { async send(message) { sent.push(message); return { messageId: "retry-ok" }; } },
   });
   assert.equal(result, 0);
   assert.equal(sent.length, 1);
   assert.equal(sent[0].to, "yceachan@foxmail.com");
+  const verify = new Store(dbPath);
+  assert.equal(verify.getDelivery(inserted.id, weekendSubscriber.id), null, "a retry must not backfill a newly eligible subscriber");
+  verify.close();
   rmSync(directory, { recursive: true, force: true });
 });
 

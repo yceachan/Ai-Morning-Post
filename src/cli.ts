@@ -5,6 +5,7 @@ import { Store } from "./db.js";
 import { createSmtpMailer, sendIssue, sendTestIssue, type Mailer } from "./mailer.js";
 import { renderIssueContent } from "./render.js";
 import { fetchAndStore } from "./rss.js";
+import { deliveryDayBit, formatDeliveryDays, parseDeliveryDays } from "./schedule.js";
 import type { IssueRecord } from "./types.js";
 
 interface ParsedArguments {
@@ -17,6 +18,7 @@ export interface CliDependencies {
   mailer?: Mailer;
   stdout?: (message: string) => void;
   stderr?: (message: string) => void;
+  now?: () => Date;
 }
 
 function parseArguments(args: string[]): ParsedArguments {
@@ -51,7 +53,7 @@ function optionString(options: Record<string, string | boolean>, key: string): s
 }
 
 function help(): string {
-  return `AI Morning Post\n\nUsage:\n  amp subscriber add <email>\n  amp subscriber list [--all]\n  amp subscriber remove <email>\n  amp fetch\n  amp preview [--text]\n  amp rerender\n  amp smtp verify\n  amp send-test <email> [--dry-run]\n  amp run [--dry-run]\n\nGlobal options:\n  --config <path>  Config TOML path (default: config.toml)\n  --db <path>      Override database path\n`;
+  return `AI Morning Post\n\nUsage:\n  amp subscriber add <email> [--days everyday|work|weekend|7b'11111_00]\n  amp subscriber schedule <email> <days>\n  amp subscriber list [--all]\n  amp subscriber remove <email>\n  amp fetch\n  amp preview [--text]\n  amp rerender\n  amp smtp verify\n  amp send-test <email> [--dry-run]\n  amp run [--dry-run]\n\nGlobal options:\n  --config <path>  Config TOML path (default: config.toml)\n  --db <path>      Override database path\n`;
 }
 
 function outputLine(write: (message: string) => void, message: string): void {
@@ -103,8 +105,15 @@ export async function runCli(args: string[] = process.argv.slice(2), dependencie
       const action = positionals[1];
       const email = positionals[2];
       if (action === "add" && email) {
-        const subscriber = store.upsertSubscriber(email);
-        outputLine(write, `Added ${subscriber.email}`);
+        const daysValue = optionString(options, "days");
+        if (options.days === true) throw new Error("--days requires a value");
+        const subscriber = store.upsertSubscriber(email, daysValue === undefined ? undefined : parseDeliveryDays(daysValue));
+        outputLine(write, `Added ${subscriber.email} (${formatDeliveryDays(subscriber.deliveryDays)})`);
+        return 0;
+      }
+      if (action === "schedule" && email && positionals[3]) {
+        const subscriber = store.setSubscriberDeliveryDays(email, parseDeliveryDays(positionals[3]));
+        outputLine(write, `Scheduled ${subscriber.email}: ${formatDeliveryDays(subscriber.deliveryDays)}`);
         return 0;
       }
       if (action === "remove" && email) {
@@ -113,10 +122,12 @@ export async function runCli(args: string[] = process.argv.slice(2), dependencie
       }
       if (action === "list") {
         const subscribers = store.listSubscribers(options.all === true);
-        for (const subscriber of subscribers) outputLine(write, `${subscriber.active ? "active" : "inactive"}\t${subscriber.email}`);
+        for (const subscriber of subscribers) {
+          outputLine(write, `${subscriber.active ? "active" : "inactive"}\t${subscriber.email}\t${formatDeliveryDays(subscriber.deliveryDays)}`);
+        }
         return 0;
       }
-      throw new Error("Usage: amp subscriber add|list|remove ...");
+      throw new Error("Usage: amp subscriber add|schedule|list|remove ...");
     }
 
     if (command === "fetch") {
@@ -176,14 +187,16 @@ export async function runCli(args: string[] = process.argv.slice(2), dependencie
         const latest = store.getLatestIssue();
         issues = latest ? [latest] : [];
       }
+      const newlyDiscoveredIssueIds = new Set(issues.map((issue) => issue.id));
       // A process can die after creating a pending row or a provider can
       // transiently fail. Retry those rows even when the RSS is unchanged.
       const retryIssues = store.getIssuesWithRetryableDeliveries();
       const byId = new Map(issues.map((issue) => [issue.id, issue]));
       for (const issue of retryIssues) byId.set(issue.id, issue);
       issues = [...byId.values()].sort((left, right) => issueDate(left) - issueDate(right));
+      const currentDayBit = deliveryDayBit(dependencies.now?.() ?? new Date());
       if (options["dry-run"] === true) {
-        outputLine(write, `Dry-run: would process ${issues.length} issue(s) for ${store.listSubscribers().length} recipient(s)`);
+        outputLine(write, `Dry-run: would process ${issues.length} issue(s); ${store.listSubscribersForDeliveryDay(currentDayBit).length} recipient(s) eligible today`);
         return 0;
       }
       if (issues.length === 0) {
@@ -193,16 +206,23 @@ export async function runCli(args: string[] = process.argv.slice(2), dependencie
       // Persist the target recipient snapshot before SMTP configuration or
       // connection. If credentials are temporarily absent, the next run can
       // safely recover these pending deliveries even when the RSS is 304.
-      for (const issue of issues) store.queueIssueForActiveSubscribers(issue.id);
+      for (const issue of issues) {
+        if (newlyDiscoveredIssueIds.has(issue.id)) store.queueIssueForEligibleSubscribers(issue.id, currentDayBit);
+      }
+      const sendableIssues = issues.filter((issue) => store.hasRetryableDeliveryForIssue(issue.id));
+      if (sendableIssues.length === 0) {
+        outputLine(write, `No eligible recipient or retryable delivery for ${issues.length} issue(s)`);
+        return 0;
+      }
       mailer = await makeMailer(config, dependencies);
       let sent = 0;
       let failed = 0;
-      for (const issue of issues) {
-        const sendResult = await sendIssue(store, issue, mailer, config.email.subjectPrefix);
+      for (const issue of sendableIssues) {
+        const sendResult = await sendIssue(store, issue, mailer, config.email.subjectPrefix, { onlyExistingDeliveries: true });
         sent += sendResult.sent;
         failed += sendResult.failed;
       }
-      outputLine(write, `Processed ${issues.length} issue(s): ${sent} sent, ${failed} failed`);
+      outputLine(write, `Processed ${sendableIssues.length} issue(s): ${sent} sent, ${failed} failed`);
       return failed > 0 ? 1 : 0;
     }
 

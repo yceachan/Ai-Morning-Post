@@ -9,6 +9,7 @@ import type {
   ParsedFeedIssue,
   SubscriberRecord,
 } from "./types.js";
+import { assertDeliveryDaysMask, EVERYDAY_DELIVERY_DAYS } from "./schedule.js";
 
 type SqlRow = Record<string, unknown>;
 
@@ -55,6 +56,7 @@ export class Store {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         email TEXT NOT NULL UNIQUE COLLATE NOCASE,
         active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+        delivery_days INTEGER NOT NULL DEFAULT 127 CHECK (delivery_days BETWEEN 0 AND 127),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -97,6 +99,11 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_issues_published_at ON issues(published_at);
       CREATE INDEX IF NOT EXISTS idx_deliveries_issue_status ON deliveries(issue_id, status);
     `);
+
+    const subscriberColumns = this.db.prepare("PRAGMA table_info(subscribers)").all() as SqlRow[];
+    if (!subscriberColumns.some((column) => String(column.name) === "delivery_days")) {
+      this.db.exec("ALTER TABLE subscribers ADD COLUMN delivery_days INTEGER NOT NULL DEFAULT 127 CHECK (delivery_days BETWEEN 0 AND 127)");
+    }
   }
 
   close(): void {
@@ -231,14 +238,33 @@ export class Store {
     };
   }
 
-  upsertSubscriber(email: string): SubscriberRecord {
+  upsertSubscriber(email: string, deliveryDays?: number): SubscriberRecord {
     const normalized = normalizeEmail(email);
     const timestamp = nowIso();
-    this.db.prepare(`
-      INSERT INTO subscribers (email, active, created_at, updated_at)
-      VALUES (?, 1, ?, ?)
-      ON CONFLICT(email) DO UPDATE SET active = 1, updated_at = excluded.updated_at
-    `).run(normalized, timestamp, timestamp);
+    if (deliveryDays === undefined) {
+      this.db.prepare(`
+        INSERT INTO subscribers (email, active, delivery_days, created_at, updated_at)
+        VALUES (?, 1, ?, ?, ?)
+        ON CONFLICT(email) DO UPDATE SET active = 1, updated_at = excluded.updated_at
+      `).run(normalized, EVERYDAY_DELIVERY_DAYS, timestamp, timestamp);
+    } else {
+      assertDeliveryDaysMask(deliveryDays);
+      this.db.prepare(`
+        INSERT INTO subscribers (email, active, delivery_days, created_at, updated_at)
+        VALUES (?, 1, ?, ?, ?)
+        ON CONFLICT(email) DO UPDATE SET active = 1, delivery_days = excluded.delivery_days, updated_at = excluded.updated_at
+      `).run(normalized, deliveryDays, timestamp, timestamp);
+    }
+    return this.getSubscriber(normalized) as SubscriberRecord;
+  }
+
+  setSubscriberDeliveryDays(email: string, deliveryDays: number): SubscriberRecord {
+    const normalized = normalizeEmail(email);
+    assertDeliveryDaysMask(deliveryDays);
+    const result = this.db.prepare(
+      "UPDATE subscribers SET delivery_days = ?, updated_at = ? WHERE email = ?",
+    ).run(deliveryDays, nowIso(), normalized) as { changes: number | bigint };
+    if (asNumber(result.changes) === 0) throw new Error(`Subscriber not found: ${normalized}`);
     return this.getSubscriber(normalized) as SubscriberRecord;
   }
 
@@ -262,11 +288,22 @@ export class Store {
     return rows.map((row) => this.mapSubscriber(row));
   }
 
+  listSubscribersForDeliveryDay(dayBit: number): SubscriberRecord[] {
+    assertDeliveryDaysMask(dayBit);
+    const rows = this.db.prepare(`
+      SELECT * FROM subscribers
+      WHERE active = 1 AND (delivery_days & ?) != 0
+      ORDER BY email
+    `).all(dayBit) as SqlRow[];
+    return rows.map((row) => this.mapSubscriber(row));
+  }
+
   private mapSubscriber(row: SqlRow): SubscriberRecord {
     return {
       id: asNumber(row.id),
       email: String(row.email),
       active: Number(row.active) === 1,
+      deliveryDays: asNumber(row.delivery_days ?? EVERYDAY_DELIVERY_DAYS),
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
     };
@@ -290,6 +327,27 @@ export class Store {
       if (!existed) queued += 1;
     }
     return queued;
+  }
+
+  queueIssueForEligibleSubscribers(issueId: number, dayBit: number): number {
+    let queued = 0;
+    for (const subscriber of this.listSubscribersForDeliveryDay(dayBit)) {
+      const existed = this.getDelivery(issueId, subscriber.id) !== null;
+      this.ensureDelivery(issueId, subscriber.id);
+      if (!existed) queued += 1;
+    }
+    return queued;
+  }
+
+  hasRetryableDeliveryForIssue(issueId: number): boolean {
+    const row = this.db.prepare(`
+      SELECT 1
+      FROM deliveries d
+      INNER JOIN subscribers s ON s.id = d.subscriber_id AND s.active = 1
+      WHERE d.issue_id = ? AND d.status IN ('pending', 'failed')
+      LIMIT 1
+    `).get(issueId);
+    return row !== undefined;
   }
 
   getDelivery(issueId: number, subscriberId: number): DeliveryRecord | null {
