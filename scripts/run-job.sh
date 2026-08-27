@@ -62,4 +62,4 @@ exec /usr/bin/env bash -c '
   load_profile "$HOME/.profile"
 
   exec "$@"
-' _ /usr/bin/node "$app_entry" --config "$app_config" run
+' _ node "$app_entry" --config "$app_config" run
