@@ -11,6 +11,11 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 app_dir="${AI_MORNING_POST_DIR:-$(CDPATH= cd -- "$script_dir/.." && pwd)}"
 app_entry="${AI_MORNING_POST_ENTRY:-$app_dir/dist/cli.js}"
 app_config="${AI_MORNING_POST_CONFIG:-$app_dir/config.toml}"
+if (($# > 0)); then
+  app_arguments=("$@")
+else
+  app_arguments=(run)
+fi
 
 if [[ ! -d "$app_dir" ]]; then
   printf 'ai-morning-post: application directory does not exist: %s\n' "$app_dir" >&2
@@ -62,4 +67,4 @@ exec /usr/bin/env bash -c '
   load_profile "$HOME/.profile"
 
   exec "$@"
-' _ node "$app_entry" --config "$app_config" run
+' _ node "$app_entry" --config "$app_config" "${app_arguments[@]}"

@@ -48,6 +48,13 @@ chmod 600 ~/.profile
 
 `config.toml` 只保留 `$QQ_SMTP_USERNAME`、`$QQ_SMTP_AUTH_CODE` 等引用；程序支持 `$NAME` 和 `${NAME}`。`scripts/run-job.sh` 被 cron/systemd 调用时会显式加载 `~/.profile`，profile 应只包含可由 Bash/POSIX shell 执行的 `export` 声明。更严格的生产环境可把这些变量改放在仅当前用户可读的独立 `EnvironmentFile`，再让调度器加载。
 
+在登录 shell 没有自动加载 `~/.profile` 的环境中，可以通过同一个安全 wrapper 执行管理命令：
+
+```bash
+scripts/run-job.sh smtp verify
+scripts/run-job.sh send-latest
+```
+
 ## VPS 部署
 
 目标目录为 `~/work/Ai-Morning-Post`。在 VPS 上执行：
