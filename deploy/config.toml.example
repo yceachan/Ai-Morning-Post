@@ -1,0 +1,24 @@
+# Runtime configuration for the single-maintainer prototype.
+#
+# Keep credentials out of this file. Values beginning with $ are resolved from
+# the process environment, which is loaded from ~/.profile and ~/.zprofile by
+# scripts/run-job.sh before the application starts.
+
+[feed]
+url = "https://daily.juya.uk/rss.xml"
+
+[database]
+path = "data/ai-morning-post.sqlite"
+
+[email]
+# QQ Mail SMTP: use the 16-character authorization code, not the login
+# password. The application expands both $NAME and ${NAME} references.
+host = "smtp.qq.com"
+port = 465
+secure = true
+username = "$QQ_SMTP_USERNAME"
+password = "$QQ_SMTP_AUTH_CODE"
+from = "$QQ_SMTP_USERNAME"
+from_name = "AI Morning Post"
+subject_prefix = "AI Morning Post"
+mode = "full"

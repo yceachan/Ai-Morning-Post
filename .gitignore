@@ -1,0 +1,26 @@
+# Local configuration and secrets. The tracked template lives in deploy/.
+config.toml
+.env
+.env.*
+!.env.example
+
+# Runtime state and logs.
+data/
+backups/
+logs/
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.sqlite-*
+
+# Node/npm output.
+node_modules/
+dist/
+coverage/
+
+# Local editor and OS files.
+.agents/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

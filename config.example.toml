@@ -1,0 +1,21 @@
+# Copy this file to config.toml. Keep config.toml out of git.
+
+[feed]
+url = "https://daily.juya.uk/rss.xml"
+
+[database]
+path = "data/ai-morning-post.sqlite"
+
+[email]
+# QQ Mail SMTP. The password is the QQ SMTP authorization code, not the
+# normal account password. Values beginning with $ are read from the process
+# environment, and can also be written as ${VARIABLE_NAME}.
+host = "smtp.qq.com"
+port = 465
+secure = true
+username = "$QQ_SMTP_USERNAME"
+password = "$QQ_SMTP_AUTH_CODE"
+from = "$QQ_SMTP_USERNAME"
+from_name = "AI Morning Post"
+subject_prefix = "AI Morning Post"
+mode = "full"

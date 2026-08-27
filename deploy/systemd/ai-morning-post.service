@@ -1,0 +1,10 @@
+[Unit]
+Description=AI Morning Post RSS newsletter run
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/work/Ai-Morning-Post
+ExecStart=%h/work/Ai-Morning-Post/scripts/run-job.sh
+UMask=0077

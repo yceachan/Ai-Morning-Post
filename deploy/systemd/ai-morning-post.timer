@@ -1,0 +1,12 @@
+[Unit]
+Description=Run AI Morning Post every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+AccuracySec=1min
+Unit=ai-morning-post.service
+
+[Install]
+WantedBy=timers.target
