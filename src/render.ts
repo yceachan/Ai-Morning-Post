@@ -239,7 +239,12 @@ export function renderIssueContent(rawHtml: string, input: RenderIssueInput & { 
   }
   safe = safe.replace(/<p>\s*<\/p>/gi, "");
   safe = inlineCriticalEmailStyles(styleImages(decorateContent(safe)));
-  const displayTitle = contentTitle ?? input.title;
+  return renderEmailContent({ html: safe, text: plainText(safe) }, { ...input, title: contentTitle ?? input.title });
+}
+
+/** Share the email shell with locally generated, escaped content such as X cards. */
+export function renderEmailContent(content: RenderedContent, input: RenderIssueInput): RenderedContent {
+  const displayTitle = input.title;
   const title = escapeHtml(displayTitle);
   const link = escapeHtml(input.link);
   const date = formatDate(input.publishedAt);
@@ -262,7 +267,7 @@ export function renderIssueContent(rawHtml: string, input: RenderIssueInput & { 
 <table role="presentation" class="email-shell" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:680px;background:#fdfdf7;border:1px solid #e5ded4;border-top:3px solid #a45d47;border-radius:10px;box-shadow:0 12px 30px rgba(72,58,47,.12)"><tr><td class="email-shell-cell" style="padding:30px 32px 32px">
 <h1 class="email-title" style="font-size:27px;line-height:35px;margin:0 0 8px;color:#2c2926;font-family:'Iowan Old Style','Baskerville','STSong','Noto Serif CJK SC',Georgia,'Times New Roman',serif;font-weight:600;letter-spacing:-.02em">${title}</h1>
 ${dateHtml}
-<div class="email-content" style="font-size:16px;line-height:29px;color:#2c2926;overflow-wrap:anywhere">${safe}</div>
+<div class="email-content" style="font-size:16px;line-height:29px;color:#2c2926;overflow-wrap:anywhere">${content.html}</div>
 ${originalHtml}
 <hr style="border:0;border-top:1px solid #e5ded4;margin:32px 0 16px">
 <p class="email-footer" style="color:#968c81;font-size:12px;line-height:18px;margin:0">${footerHtml}</p>
@@ -270,7 +275,7 @@ ${originalHtml}
 </td></tr></table>
 </body></html>`;
 
-  const bodyText = plainText(safe);
+  const bodyText = content.text;
   const text = [displayTitle, date, "", bodyText, input.link ? `${linkLabel}：${input.link}` : "", "", footerText]
     .filter((line, index, values) => line !== "" || (index > 0 && values[index - 1] !== ""))
     .join("\n")

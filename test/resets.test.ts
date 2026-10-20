@@ -148,13 +148,22 @@ test("failed SMTP recipients retry independently with stable Message-IDs", async
   } finally { store.close(); }
 });
 
-test("email renders escaped source text, UTC+8 schedule, banked type and attribution", () => {
-  const message = renderResetMessage({ ...scheduled, text: executed.text, reset_type: "banked" }, "person@example.com");
+test("email preserves the API English message in a static X card within the shared mail shell", () => {
+  const message = renderResetMessage({ ...scheduled, text: `${executed.text}\nEnjoy. https://t.co/example`, reset_type: "banked" }, "person@example.com");
   assert.match(message.html, /&lt;script&gt;/);
   assert.doesNotMatch(message.html, /<script>/);
   assert.match(message.text, /2026\/10\/21 08:00（UTC\+8）/);
   assert.match(message.text, /banked/);
   assert.match(message.html, /href="https:\/\/codex-resets.com"/);
+  assert.match(message.html, /class="email-shell"/);
+  assert.match(message.html, /@thsottiaux/);
+  assert.match(message.html, /aria-label="Verified"/);
+  assert.match(message.html, /width="44" height="44"/);
+  assert.match(message.html, /height:44px;margin:0!important/);
+  assert.match(message.html, /&lt;\/script&gt;<br>Enjoy\./);
+  assert.match(message.html, /href="https:\/\/t.co\/example"/);
+  assert.match(message.text, /Reset complete <script>alert\(1\)<\/script>\nEnjoy\. https:\/\/t.co\/example/);
+  assert.doesNotMatch(message.html, /<script|<iframe|widgets\.js|We're cooked/);
 });
 
 function cliFixture() {

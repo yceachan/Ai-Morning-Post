@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Store } from "./db.js";
 import type { Mailer, OutgoingMessage } from "./mailer.js";
-import { renderIssueContent } from "./render.js";
+import { renderEmailContent, renderIssueContent } from "./render.js";
+import { renderXPost } from "./x-post.js";
 
 const API = "https://codex-resets.com/api/v1/";
 export const RESET_TEST_RECIPIENT = "yceachan@foxmail.com";
@@ -11,7 +12,7 @@ export interface ResetAnnouncement {
   reset_type: "regular" | "banked";
   announced_at: string;
   text: string;
-  source: { type: "x_post" | "observed"; url?: string };
+  source: { type: "x_post" | "observed"; author?: string; url?: string };
 }
 
 export interface ResetEvent extends ResetAnnouncement {
@@ -54,9 +55,15 @@ function parseAnnouncement(value: unknown, kind: ResetEvent["kind"]): ResetEvent
   } else if (source.type === "x_post") {
     throw new Error("Missing Codex Resets API source URL");
   }
+  if (source.author !== undefined && (typeof source.author !== "string" || !/^[a-z0-9_]{1,15}$/i.test(source.author))) {
+    throw new Error("Invalid Codex Resets API author");
+  }
   const event: ResetEvent = {
     id: row.id, text: row.text, reset_type: row.reset_type,
-    announced_at: timestamp(row.announced_at), source: { type: source.type, url }, kind,
+    announced_at: timestamp(row.announced_at), source: {
+      type: source.type, url,
+      ...(typeof source.author === "string" ? { author: source.author } : {}),
+    }, kind,
   };
   if (kind === "scheduled") {
     if (row.status !== "scheduled") throw new Error("Invalid Codex Resets scheduled status");
@@ -225,12 +232,25 @@ export function renderResetMessage(event: ResetEvent, to: string, test = false):
     : `公告时间：${displayTime(event.announced_at)}`;
   const intro = test ? "测试邮件 · 以下为当前 API 数据快照。" : "检测到新的 Codex 重置公告。";
   const sourceUrl = event.source.url ?? "https://codex-resets.com";
-  const rendered = renderIssueContent(
+  const input = {
+    title, link: sourceUrl, publishedAt: event.announced_at,
+    linkLabel: "查看公告来源", source: { name: "Codex Resets", url: "https://codex-resets.com" },
+  };
+  // Older persisted events retain the source URL but predate the author field.
+  const handle = event.source.type === "x_post"
+    ? event.source.author ?? new URL(sourceUrl).pathname.split("/")[1] : null;
+  const post = handle ? renderXPost({
+    name: handle === "thsottiaux" ? "Tibo" : handle,
+    handle, verified: handle === "thsottiaux",
+    ...(handle === "thsottiaux" ? { avatarUrl: "https://pbs.twimg.com/profile_images/2093807917833281537/2yBgpwVV_normal.jpg" } : {}),
+    text: event.text, publishedAt: event.announced_at, url: sourceUrl,
+  }) : null;
+  const rendered = post ? renderEmailContent({
+    html: `<p style="margin:0 0 16px">${intro}</p><p style="margin:0 0 24px">类型：${type}<br>${timing}</p>${post.html}`,
+    text: `${intro}\n类型：${type}\n${timing}\n\n公告原文：\n${post.text}`,
+  }, input) : renderIssueContent(
     `<p>${intro}</p><p>类型：${type}<br>${timing}</p><h3>公告原文</h3><p>${escapeHtml(event.text).replace(/\r\n|\r|\n/g, "<br>")}</p>`,
-    {
-      title, link: sourceUrl, publishedAt: event.announced_at,
-      linkLabel: "查看公告来源", source: { name: "Codex Resets", url: "https://codex-resets.com" },
-    },
+    input,
   );
   const hash = createHash("sha256").update(`${eventKey(event)}:${to}`).digest("hex");
   return {
