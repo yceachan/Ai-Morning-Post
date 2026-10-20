@@ -16,7 +16,7 @@ const executed: ResetEvent = {
 };
 const scheduled: ResetEvent & { status: "scheduled" } = {
   ...executed, id: "new", kind: "scheduled", status: "scheduled",
-  announced_at: "2026-10-20T02:00:00.000Z", scheduled_for: "2026-10-21T00:00:00.000Z", text: "Reset tomorrow",
+  announced_at: "2026-10-20T00:30:00.000Z", scheduled_for: "2026-10-21T00:00:00.000Z", text: "Reset tomorrow",
 };
 
 function api(options: { latest?: ResetEvent | null; planned?: unknown; history?: ResetEvent[]; generatedAt?: string; watch?: unknown } = {}): typeof fetch {
@@ -64,10 +64,11 @@ test("scheduled announcements, revised times and execution have separate durable
     ledger = new ResetStore(store);
     await discoverResetEvents(ledger, { fetchImpl: api({ planned: scheduled }) });
     assert.equal(ledger.pending().length, 0);
+    assert.equal((await discoverResetEvents(ledger, { fetchImpl: api({ planned: scheduled }), dryRun: true })).discovered, 0);
     const revised = { ...scheduled, scheduled_for: "2026-10-22T00:00:00Z" };
     await discoverResetEvents(ledger, { fetchImpl: api({ planned: revised }) });
     await sendResetNotifications(ledger, mailer);
-    const complete: ResetEvent = { ...executed, id: scheduled.id, announced_at: "2026-10-22T00:00:00Z" };
+    const complete: ResetEvent = { ...executed, id: scheduled.id, announced_at: scheduled.announced_at };
     await discoverResetEvents(ledger, { fetchImpl: api({ latest: complete, history: [complete] }) });
     await sendResetNotifications(ledger, mailer);
     assert.equal(sent.length, 3);

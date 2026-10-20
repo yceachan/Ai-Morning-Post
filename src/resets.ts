@@ -138,6 +138,10 @@ export class ResetStore {
     return (this.store.db.prepare("SELECT last_checked_at FROM reset_state WHERE id = 1").get() as { last_checked_at: string | null }).last_checked_at;
   }
 
+  hasEvent(event: ResetEvent): boolean {
+    return this.store.db.prepare("SELECT 1 FROM reset_events WHERE event_key = ?").get(eventKey(event)) !== undefined;
+  }
+
   record(events: ResetEvent[], checkedAt: string, baselineLatest: ResetEvent | null): number {
     const db = this.store.db;
     let added = 0;
@@ -189,9 +193,14 @@ export async function discoverResetEvents(ledger: ResetStore, options: { fetchIm
   const status = await fetchResetStatus(fetchImpl);
   const checkpoint = ledger.checkpoint();
   const events = checkpoint ? await fetchResetHistory(checkpoint, fetchImpl) : [];
-  if (checkpoint && status.latest && Date.parse(status.latest.announced_at) >= Date.parse(checkpoint)) events.push(status.latest);
+  // Execution can retain the original scheduled post's announcement time.
+  // Always inspect latest_reset; the event ledger supplies the deduplication.
+  if (checkpoint && status.latest) events.push(status.latest);
   if (status.scheduled) events.push(status.scheduled);
-  if (options.dryRun) return { initialized: checkpoint !== null, discovered: events.length };
+  if (options.dryRun) {
+    const unique = new Map(events.map((event) => [eventKey(event), event]));
+    return { initialized: checkpoint !== null, discovered: [...unique.values()].filter((event) => !ledger.hasEvent(event)).length };
+  }
   const discovered = ledger.record(events, status.generatedAt, checkpoint ? null : status.latest);
   return { initialized: checkpoint !== null, discovered };
 }
