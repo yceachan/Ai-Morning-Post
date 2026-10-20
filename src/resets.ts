@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Store } from "./db.js";
 import type { Mailer, OutgoingMessage } from "./mailer.js";
+import { renderIssueContent } from "./render.js";
 
 const API = "https://codex-resets.com/api/v1/";
 export const RESET_TEST_RECIPIENT = "yceachan@foxmail.com";
@@ -224,12 +225,17 @@ export function renderResetMessage(event: ResetEvent, to: string, test = false):
     : `公告时间：${displayTime(event.announced_at)}`;
   const intro = test ? "测试邮件 · 以下为当前 API 数据快照。" : "检测到新的 Codex 重置公告。";
   const sourceUrl = event.source.url ?? "https://codex-resets.com";
-  const text = `${intro}\n\n${title}\n类型：${type}\n${timing}\n\n公告原文：\n${event.text}\n\n公告来源：${sourceUrl}\n数据来源：Codex Resets https://codex-resets.com\n`;
+  const rendered = renderIssueContent(
+    `<p>${intro}</p><p>类型：${type}<br>${timing}</p><h3>公告原文</h3><p>${escapeHtml(event.text).replace(/\r\n|\r|\n/g, "<br>")}</p>`,
+    {
+      title, link: sourceUrl, publishedAt: event.announced_at,
+      linkLabel: "查看公告来源", source: { name: "Codex Resets", url: "https://codex-resets.com" },
+    },
+  );
   const hash = createHash("sha256").update(`${eventKey(event)}:${to}`).digest("hex");
   return {
     to, subject: `${test ? "[TEST] " : ""}[Codex Resets] ${title}`,
-    text,
-    html: `<!doctype html><html lang="zh-CN"><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0;background:#f4f4f5;color:#18181b;font:16px/1.7 sans-serif"><main style="max-width:600px;margin:24px auto;padding:24px;background:white;border-radius:12px"><p>${intro}</p><h1 style="font-size:24px">${title}</h1><p>类型：${type}<br>${timing}</p><h2 style="font-size:18px">公告原文</h2><p style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHtml(event.text)}</p><p><a href="${escapeHtml(sourceUrl)}">查看公告来源</a></p><hr><p style="font-size:13px">数据来源：<a href="https://codex-resets.com">Codex Resets</a></p></main></body></html>`,
+    ...rendered,
     messageId: `amp-reset-${hash}${test ? `-test-${randomUUID()}` : ""}@ai-morning-post.local`,
   };
 }

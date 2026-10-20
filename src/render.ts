@@ -6,6 +6,8 @@ export interface RenderIssueInput {
   link: string;
   publishedAt: string | null;
   mode?: "full" | "compact";
+  linkLabel?: string;
+  source?: { name: string; url: string };
 }
 
 export interface RenderedContent {
@@ -242,9 +244,16 @@ export function renderIssueContent(rawHtml: string, input: RenderIssueInput & { 
   const link = escapeHtml(input.link);
   const date = formatDate(input.publishedAt);
   const dateHtml = date ? `<p class="email-date" style="color:#6e665e;font-size:13px;line-height:20px;margin:0 0 18px">${escapeHtml(date)}</p>` : "";
+  const linkLabel = input.linkLabel ?? "阅读完整日报";
   const originalHtml = input.link
-    ? `<p style="margin:30px 0 0;font-size:15px;line-height:24px"><a href="${link}" target="_blank" rel="noopener noreferrer" style="color:#a45d47;text-decoration:underline;text-decoration-color:#c4a197">阅读完整日报 <span aria-hidden="true">→</span></a></p>`
+    ? `<p style="margin:30px 0 0;font-size:15px;line-height:24px"><a href="${link}" target="_blank" rel="noopener noreferrer" style="color:#a45d47;text-decoration:underline;text-decoration-color:#c4a197">${escapeHtml(linkLabel)} <span aria-hidden="true">→</span></a></p>`
     : "";
+  const footerHtml = input.source
+    ? `AI Morning Post · 数据来源：<a href="${escapeHtml(input.source.url)}" style="color:#968c81;text-decoration:underline">${escapeHtml(input.source.name)}</a>`
+    : `AI Morning Post · 内容来自 RSS：<a href="https://daily.juya.uk/rss.xml" style="color:#968c81;text-decoration:underline">daily.juya.uk</a>`;
+  const footerText = input.source
+    ? `AI Morning Post · 数据来源：${input.source.name} ${input.source.url}`
+    : "AI Morning Post · 内容来自 daily.juya.uk/rss.xml";
   const html = `<!doctype html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>${title}</title>${EMAIL_STYLES}</head>
@@ -256,13 +265,13 @@ ${dateHtml}
 <div class="email-content" style="font-size:16px;line-height:29px;color:#2c2926;overflow-wrap:anywhere">${safe}</div>
 ${originalHtml}
 <hr style="border:0;border-top:1px solid #e5ded4;margin:32px 0 16px">
-<p class="email-footer" style="color:#968c81;font-size:12px;line-height:18px;margin:0">AI Morning Post · 内容来自 RSS：<a href="https://daily.juya.uk/rss.xml" style="color:#968c81;text-decoration:underline">daily.juya.uk</a></p>
+<p class="email-footer" style="color:#968c81;font-size:12px;line-height:18px;margin:0">${footerHtml}</p>
 </td></tr></table>
 </td></tr></table>
 </body></html>`;
 
   const bodyText = plainText(safe);
-  const text = [displayTitle, date, "", bodyText, input.link ? `阅读完整日报：${input.link}` : "", "", "AI Morning Post · 内容来自 daily.juya.uk/rss.xml"]
+  const text = [displayTitle, date, "", bodyText, input.link ? `${linkLabel}：${input.link}` : "", "", footerText]
     .filter((line, index, values) => line !== "" || (index > 0 && values[index - 1] !== ""))
     .join("\n")
     .trim();
