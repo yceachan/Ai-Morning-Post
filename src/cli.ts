@@ -104,12 +104,13 @@ export async function runCli(args: string[] = process.argv.slice(2), dependencie
       const value = optionString(options, key);
       if (value) commonArgs.push(`--${key}`, value);
     }
-    if (options["dry-run"] === true) commonArgs.push("--dry-run");
     const jobs = config.resets.enabled ? [["resets", "run"], ["run"]] : [["run"]];
     let exitCode = 0;
     for (const job of jobs) {
       try {
-        if (await runCli([...commonArgs, ...job], dependencies) !== 0) exitCode = 1;
+        const jobArgs = [...commonArgs, ...job];
+        if (options["dry-run"] === true) jobArgs.push("--dry-run");
+        if (await runCli(jobArgs, dependencies) !== 0) exitCode = 1;
       } catch (error) {
         (dependencies.stderr ?? ((message: string) => process.stderr.write(message)))(`${job.join(" ")}: ${formatError(error)}\n`);
         exitCode = 1;

@@ -228,3 +228,26 @@ test("reset notifications default to disabled and reject malformed enable flags"
     assert.throws(() => loadConfig(path), /boolean/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("poll dry-run propagates the flag to both jobs without sending or advancing reset state", async () => {
+  const { directory, path, dbPath } = cliFixture();
+  const setup = new Store(dbPath);
+  setup.upsertSubscriber("person@example.com");
+  setup.close();
+  const messages: OutgoingMessage[] = [];
+  const output: string[] = [];
+  try {
+    assert.equal(await runCli(["--config", path, "poll", "--dry-run"], {
+      fetchImpl: async (input, init) => String(input).includes("codex-resets.com")
+        ? api({ planned: scheduled })(input, init) : new Response(null, { status: 304 }),
+      stdout(message) { output.push(message); },
+      mailer: { async send(message) { messages.push(message); return {}; } },
+    }), 0);
+    assert.equal(messages.length, 0);
+    assert.match(output.join(""), /Codex resets dry-run/);
+    assert.match(output.join(""), /Dry-run: would process/);
+    const verify = new Store(dbPath);
+    assert.equal(new ResetStore(verify).checkpoint(), null);
+    verify.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
