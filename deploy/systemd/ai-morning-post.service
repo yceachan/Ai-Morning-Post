@@ -1,5 +1,5 @@
 [Unit]
-Description=AI Morning Post RSS newsletter run
+Description=AI Morning Post newsletter and Codex reset notifications
 Wants=network-online.target
 After=network-online.target
 

@@ -75,6 +75,10 @@ export function loadConfig(configPath = process.env.AMP_CONFIG ?? "config.toml",
 
   const feed = asRecord(raw.feed);
   const database = asRecord(raw.database);
+  const resets = asRecord(raw.resets);
+  if (resets.enabled !== undefined && typeof resets.enabled !== "boolean") {
+    throw new ConfigError("resets.enabled must be a boolean");
+  }
   // `[email]` is the documented name; `[smtp]` is accepted as a convenient
   // alias for people migrating from a generic SMTP config.
   const email = asRecord(raw.email ?? raw.smtp);
@@ -109,6 +113,7 @@ export function loadConfig(configPath = process.env.AMP_CONFIG ?? "config.toml",
       path: pathFromConfig(configuredDbPath, absoluteConfigPath),
     },
     email: emailConfig,
+    resets: { enabled: resets.enabled === true },
   };
 }
 

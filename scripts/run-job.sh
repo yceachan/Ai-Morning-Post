@@ -14,7 +14,7 @@ app_config="${AI_MORNING_POST_CONFIG:-$app_dir/config.toml}"
 if (($# > 0)); then
   app_arguments=("$@")
 else
-  app_arguments=(run)
+  app_arguments=(poll)
 fi
 
 if [[ ! -d "$app_dir" ]]; then

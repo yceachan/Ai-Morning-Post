@@ -6,6 +6,7 @@ import { createSmtpMailer, sendIssue, sendTestIssue, type Mailer } from "./maile
 import { renderIssueContent } from "./render.js";
 import { fetchAndStore } from "./rss.js";
 import { deliveryDayBit, formatDeliveryDays, parseDeliveryDays } from "./schedule.js";
+import { discoverResetEvents, fetchResetStatus, renderResetMessage, RESET_TEST_RECIPIENT, ResetStore, sendResetNotifications } from "./resets.js";
 import type { IssueRecord } from "./types.js";
 
 interface ParsedArguments {
@@ -53,7 +54,7 @@ function optionString(options: Record<string, string | boolean>, key: string): s
 }
 
 function help(): string {
-  return `AI Morning Post\n\nUsage:\n  amp subscriber add <email> [--days everyday|work|weekend|7b'11111_00]\n  amp subscriber schedule <email> <days>\n  amp subscriber list [--all]\n  amp subscriber remove <email>\n  amp fetch\n  amp preview [--text]\n  amp rerender\n  amp smtp verify\n  amp send-test <email> [--dry-run]\n  amp run [--dry-run]\n\nGlobal options:\n  --config <path>  Config TOML path (default: config.toml)\n  --db <path>      Override database path\n`;
+  return `AI Morning Post\n\nUsage:\n  amp subscriber add <email> [--days everyday|work|weekend|7b'11111_00]\n  amp subscriber schedule <email> <days>\n  amp subscriber list [--all]\n  amp subscriber remove <email>\n  amp fetch\n  amp preview [--text]\n  amp rerender\n  amp smtp verify\n  amp send-test <email> [--dry-run]\n  amp run [--dry-run]\n  amp poll [--dry-run]\n  amp resets run [--dry-run]\n  amp resets send-test [--dry-run]\n\nGlobal options:\n  --config <path>  Config TOML path (default: config.toml)\n  --db <path>      Override database path\n`;
 }
 
 function outputLine(write: (message: string) => void, message: string): void {
@@ -97,10 +98,65 @@ export async function runCli(args: string[] = process.argv.slice(2), dependencie
     config.email.mode = mode;
   }
   if (optionString(options, "db")) config.database.path = optionString(options, "db") as string;
+  if (positionals[0] === "poll") {
+    const commonArgs = ["--config", configPath];
+    for (const key of ["db", "mode"]) {
+      const value = optionString(options, key);
+      if (value) commonArgs.push(`--${key}`, value);
+    }
+    if (options["dry-run"] === true) commonArgs.push("--dry-run");
+    const jobs = config.resets.enabled ? [["resets", "run"], ["run"]] : [["run"]];
+    let exitCode = 0;
+    for (const job of jobs) {
+      try {
+        if (await runCli([...commonArgs, ...job], dependencies) !== 0) exitCode = 1;
+      } catch (error) {
+        (dependencies.stderr ?? ((message: string) => process.stderr.write(message)))(`${job.join(" ")}: ${formatError(error)}\n`);
+        exitCode = 1;
+      }
+    }
+    return exitCode;
+  }
   const store = new Store(config.database.path);
   let mailer: Mailer | undefined;
   try {
     const command = positionals[0];
+    if (command === "resets") {
+      const action = positionals[1];
+      if (action === "send-test") {
+        if (positionals.length !== 2) throw new Error(`Usage: amp resets send-test (recipient is fixed to ${RESET_TEST_RECIPIENT})`);
+        const status = await fetchResetStatus(dependencies.fetchImpl);
+        const event = status.scheduled ?? status.latest;
+        if (!event) throw new Error("No Codex reset announcement available for a test email");
+        const message = renderResetMessage(event, RESET_TEST_RECIPIENT, true);
+        if (options["dry-run"] === true) {
+          outputLine(write, message.text);
+          return 0;
+        }
+        mailer = await makeMailer(config, dependencies);
+        await mailer.send(message);
+        outputLine(write, `Sent Codex reset test email to ${RESET_TEST_RECIPIENT}; delivery records unchanged`);
+        return 0;
+      }
+      if (action !== "run") throw new Error("Usage: amp resets run [--dry-run] | resets send-test [--dry-run]");
+      const ledger = new ResetStore(store);
+      let discoveryError: unknown;
+      try {
+        const result = await discoverResetEvents(ledger, { fetchImpl: dependencies.fetchImpl, dryRun: options["dry-run"] === true });
+        outputLine(write, `Codex resets${options["dry-run"] === true ? " dry-run" : ""}: ${result.initialized ? "checked" : "initial baseline"}, ${result.discovered} new event(s)`);
+      } catch (error) {
+        discoveryError = error;
+      }
+      if (options["dry-run"] !== true && ledger.pending().length > 0) {
+        mailer = await makeMailer(config, dependencies);
+        const result = await sendResetNotifications(ledger, mailer);
+        outputLine(write, `Codex resets: ${result.sent} sent, ${result.failed} failed`);
+        if (discoveryError) throw discoveryError;
+        return result.failed > 0 ? 1 : 0;
+      }
+      if (discoveryError) throw discoveryError;
+      return 0;
+    }
     if (command === "subscriber") {
       const action = positionals[1];
       const email = positionals[2];

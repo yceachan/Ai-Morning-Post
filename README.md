@@ -48,11 +48,41 @@ node dist/cli.js --config config.toml subscriber schedule work@example.com "7b'1
 
 数据库使用一个整数掩码的低七位，从高到低依次表示周一至周日：`11111_11` 是 `everyday`，`11111_00` 是 `work`，`00000_11` 是 `weekend`，第八位保留。筛选使用 `Asia/Singapore` 当天日期，只在新期刊首次建立投递记录时执行；不符合当天配置的期刊会跳过，不会延迟到下一个接收日。已经建立的 pending/failed 投递会继续重试，不因跨日而丢失。
 
-`preview` 和 `send-test EMAIL` 都会基于数据库中的 RSS 原文，使用当前代码即时渲染，不读取 `rendered_html` 缓存；测试邮件不会创建或修改投递记录，可以反复验收。`run` 是唯一的定时/正式推送入口，继续使用投递记录完成去重和失败重试。
+`preview` 和 `send-test EMAIL` 都会基于数据库中的 RSS 原文，使用当前代码即时渲染，不读取 `rendered_html` 缓存；测试邮件不会创建或修改投递记录，可以反复验收。`run` 负责早报正式推送，使用投递记录完成去重和失败重试；定时 wrapper 默认执行 `poll`，分别检查已启用的 Codex 重置通知和早报。
 
 模板升级后可手工执行 `node dist/cli.js --config config.toml rerender`，在单个事务中重建所有历史期刊的 `rendered_html` / `rendered_text`，不会改动订阅者或投递记录。`deploy/install.sh` 在正常构建后会自动执行这一步。
 
 常用命令还包括 `fetch`、`smtp verify`、`rerender`、`send-test EMAIL`、`run`、`subscriber remove EMAIL`。执行 `node dist/cli.js --help` 查看当前版本的完整帮助。
+
+## Codex 重置邮件通知
+
+在已有 `config.toml` 中启用：
+
+```toml
+[resets]
+enabled = true
+```
+
+定时器每 15 分钟执行一次 `poll`，通过 [Codex Resets API](https://codex-resets.com/api/docs) 查询新消息。一旦发现明确公布的重置计划或新发生的重置，就通知全部有效早报订阅者；常规重置和备用重置额度（banked）均支持。收件人使用早报名单，重置消息每天接收，早报原有的星期设置继续用于早报。
+
+首次查询将最新已发生重置记录为历史基线，已有的待执行计划会立即进入投递。后续通过历史接口分页补查上次成功查询以来的重置。计划公布、计划时间调整、重置执行分别形成通知；同一消息对同一收件人成功投递后去重，失败投递在下次轮询重试。API 的 `active_watch` 概率预测保留为查询数据，邮件触发条件使用明确的计划和执行消息。邮件时间采用 `Asia/Singapore`（UTC+8），并附公告原文和数据来源链接。
+
+```bash
+# 只查看当前快照，不发送邮件
+scripts/run-job.sh resets send-test --dry-run
+
+# 验收邮件固定发往 yceachan@foxmail.com，带 [TEST] 标记
+scripts/run-job.sh resets send-test
+
+# 单独检查重置消息；dry-run 保留查询进度和投递状态
+scripts/run-job.sh resets run --dry-run
+scripts/run-job.sh resets run
+
+# 执行与定时器相同的一轮任务
+scripts/run-job.sh poll
+```
+
+测试邮件使用独立入口，发送记录与正式通知分开。`poll` 会分别处理重置任务和早报任务的错误，任何一项失败时仍执行另一项，并以非零退出码报告故障。重置查询失败时，已排队的邮件仍会重试；查询进度在完整读取 API 后提交。生产环境统一通过带文件锁的 `scripts/run-job.sh` 执行，避免定时与手工操作并发投递。
 
 ## 为什么原型仍保留 SQLite
 
@@ -102,7 +132,7 @@ node dist/cli.js --config config.toml run --dry-run
 
 安装脚本会安装依赖、构建程序、创建 `data/`、`logs/`、`backups/`，并把无密钥的 `deploy/config.toml.example` 首次复制为权限 `600` 的 `config.toml`。它不会覆盖已有配置，不会读取或提交授权码，也不会改变不带 `ai-morning-post managed cron` 标记的 crontab 行。
 
-当前 VPS 的 user-systemd linger 未开启，因此默认使用当前用户的单条 crontab，每 15 分钟执行一次：
+安装脚本默认使用当前用户的单条 crontab，每 15 分钟执行一次；已部署的 VPS 当前使用 user-systemd timer：
 
 ```bash
 crontab -l

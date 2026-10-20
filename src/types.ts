@@ -26,6 +26,7 @@ export interface AppConfig {
   feed: FeedConfig;
   database: DatabaseConfig;
   email: EmailConfig;
+  resets: { enabled: boolean };
 }
 
 export interface IssueRecord {

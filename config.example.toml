@@ -6,6 +6,10 @@ url = "https://daily.juya.uk/rss.xml"
 [database]
 path = "data/ai-morning-post.sqlite"
 
+[resets]
+# Enable Codex reset notifications for all active newsletter subscribers.
+enabled = false
+
 [email]
 # QQ Mail SMTP. The password is the QQ SMTP authorization code, not the
 # normal account password. Values beginning with $ are read from the process

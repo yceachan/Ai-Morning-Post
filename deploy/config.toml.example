@@ -10,6 +10,9 @@ url = "https://daily.juya.uk/rss.xml"
 [database]
 path = "data/ai-morning-post.sqlite"
 
+[resets]
+enabled = false
+
 [email]
 # QQ Mail SMTP: use the 16-character authorization code, not the login
 # password. The application expands both $NAME and ${NAME} references.
