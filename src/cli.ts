@@ -123,6 +123,7 @@ export async function runCli(args: string[] = process.argv.slice(2), dependencie
   try {
     const command = positionals[0];
     if (command === "resets") {
+      config.email.fromName = "Codex Reset Plan";
       const action = positionals[1];
       if (action === "send-test") {
         if (positionals.length !== 2) throw new Error(`Usage: amp resets send-test (recipient is fixed to ${RESET_TEST_RECIPIENT})`);
