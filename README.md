@@ -1,181 +1,415 @@
 # AI Morning Post
 
-把 [AI Morning Post RSS](https://daily.juya.uk/rss.xml) 整理成适合邮件阅读的 HTML/纯文本日报。原型是私有、维护者手工管理收件人列表的 CLI 服务，不开放网页订阅，也不调用大模型二次改写内容。
+面向个人和小型私有名单的邮件订阅服务：把 [AI Morning Post RSS](https://daily.juya.uk/rss.xml) 转成适合邮箱阅读的早报，并可通过 [Codex Resets API](https://codex-resets.com/api/docs) 发送 Codex 重置公告。维护者通过 CLI 管理用户，服务按约 15 分钟的周期检查更新，使用同一个 SMTP 邮箱逐个投递。
 
-## 原型工作流
+导航：[能力范围](#能力范围) · [首次部署](#首次部署) · [用户列表维护](#用户列表维护) · [运维命令](#运行与运维命令) · [备份恢复](#数据备份与恢复) · [升级回滚](#升级与回滚)
 
-```text
-RSS --15 分钟轮询--> SQLite 去重/记录 --渲染--> QQ Mail SMTP --逐个收件人--> 日报
-```
+## 能力范围
 
-首次 `fetch` 只记录当前 RSS 期刊，不会追发历史内容；验收邮件使用独立的 `send-test`，之后由定时 `run` 处理新一期。数据库唯一约束避免同一期刊重复发送。
+| 能力 | 当前行为 |
+| --- | --- |
+| 早报邮件 | 抓取 RSS，生成 HTML 与纯文本正文；保留原文内容、链接和来源，清理脚本等活动内容 |
+| 阅读模式 | `full` 保留正文及图片；`compact` 保留文字，移除图片和图片画廊 |
+| 用户管理 | 添加、停用、重新启用邮箱；为每个用户设置每天、工作日、周末或自定义星期 |
+| Codex 重置通知 | 可选启用，支持常规重置与备用重置额度（banked）；通知明确公布的计划、计划时间变化和重置执行 |
+| 投递管理 | SQLite 保存期刊、订阅者、查询进度和投递记录；成功记录去重，pending/failed 记录在后续轮询重试 |
+| 验收与预览 | 本地预览早报；独立发送带 `[TEST]` 标记的早报或重置测试邮件 |
+| 部署 | Linux、Node.js 24+，支持 user-systemd timer 或用户 crontab |
 
-## 本地运行
+邮件由同一邮箱发送，通过显示名称和主题区分：
 
-需要 Node.js 24 或更新版本。
+| 邮件类型 | 发件人显示名称 | 主题 |
+| --- | --- | --- |
+| 早报 | `[email].from_name`，默认 `AI Morning Post` | 默认 `[AI Morning Post] <期刊标题>` |
+| Codex 重置 | 固定 `Codex Reset Plan` | `[Codex Resets] <通知标题>` |
+
+两类邮件共用 `[email].from` 和 SMTP 认证账号。重置通知采用 API 返回的公告原文；X 来源以适合邮件的静态帖子卡片展示。邮件时间和早报接收星期统一采用 **Asia/Singapore（UTC+8）**。
+
+服务定位为单维护者管理的私有 CLI。订阅和退订由维护者操作，内容直接来自订阅源，邮件模板在本地渲染。早报在发现新期刊后发送，实际时间取决于源站更新和下一次轮询；`everyday` 表示每天都有接收资格。
+
+## 首次部署
+
+以下命令在目标 Linux 用户下执行。默认目录为 `~/work/Ai-Morning-Post`，systemd 模板也使用这个路径。
+
+### 1. 准备运行环境与代码
+
+准备 Git、Bash、Node.js 24+、npm 和 `flock`。服务器需要能够访问 RSS、Codex Resets API（启用重置通知时）以及 SMTP 服务。
 
 ```bash
+node --version
+npm --version
+command -v flock
+
+mkdir -p ~/work
+git clone https://github.com/yceachan/Ai-Morning-Post.git ~/work/Ai-Morning-Post
+cd ~/work/Ai-Morning-Post
+
 npm ci
-cp config.example.toml config.toml
 npm run build
-
-# 预览不会连接 SMTP，也不会写入发送记录
-node dist/cli.js --config config.toml preview
-node dist/cli.js --config config.toml send-test yceachan@foxmail.com
-node dist/cli.js --config config.toml run --dry-run
+install -d -m 700 data logs backups
+cp config.example.toml config.toml
+chmod 600 config.toml
 ```
 
-维护者收件人只通过 CLI 管理。原型的第一个收件人是：
+已有部署的更新步骤见[升级与回滚](#升级与回滚)。
+
+### 2. 配置发件邮箱
+
+编辑 `~/.profile`，保留原有内容并加入：
 
 ```bash
-node dist/cli.js --config config.toml subscriber add yceachan@foxmail.com
-node dist/cli.js --config config.toml subscriber list
-node dist/cli.js --config config.toml smtp verify
+export QQ_SMTP_USERNAME='your-bot@qq.com'
+export QQ_SMTP_AUTH_CODE='你的QQ邮箱SMTP授权码'
 ```
-
-每个收件人可以独立配置接收星期；未指定时默认为 `everyday`：
 
 ```bash
-# 周一到周五
-node dist/cli.js --config config.toml subscriber add work@example.com --days work
-
-# 修改已有收件人：仅周六、周日
-node dist/cli.js --config config.toml subscriber schedule work@example.com weekend
-
-# 自定义周一到周日：1 表示接收，0 表示跳过
-node dist/cli.js --config config.toml subscriber schedule work@example.com "7b'10101_10"
-```
-
-数据库使用一个整数掩码的低七位，从高到低依次表示周一至周日：`11111_11` 是 `everyday`，`11111_00` 是 `work`，`00000_11` 是 `weekend`，第八位保留。筛选使用 `Asia/Singapore` 当天日期，只在新期刊首次建立投递记录时执行；不符合当天配置的期刊会跳过，不会延迟到下一个接收日。已经建立的 pending/failed 投递会继续重试，不因跨日而丢失。
-
-`preview` 和 `send-test EMAIL` 都会基于数据库中的 RSS 原文，使用当前代码即时渲染，不读取 `rendered_html` 缓存；测试邮件不会创建或修改投递记录，可以反复验收。`run` 负责早报正式推送，使用投递记录完成去重和失败重试；定时 wrapper 默认执行 `poll`，分别检查已启用的 Codex 重置通知和早报。
-
-模板升级后可手工执行 `node dist/cli.js --config config.toml rerender`，在单个事务中重建所有历史期刊的 `rendered_html` / `rendered_text`，不会改动订阅者或投递记录。`deploy/install.sh` 在正常构建后会自动执行这一步。
-
-常用命令还包括 `fetch`、`smtp verify`、`rerender`、`send-test EMAIL`、`run`、`subscriber remove EMAIL`。执行 `node dist/cli.js --help` 查看当前版本的完整帮助。
-
-## Codex 重置邮件通知
-
-在已有 `config.toml` 中启用：
-
-```toml
-[resets]
-enabled = true
-```
-
-定时器每 15 分钟执行一次 `poll`，通过 [Codex Resets API](https://codex-resets.com/api/docs) 查询新消息。一旦发现明确公布的重置计划或新发生的重置，就通知全部有效早报订阅者；常规重置和备用重置额度（banked）均支持。收件人使用早报名单，重置消息每天接收，早报原有的星期设置继续用于早报。
-
-首次查询将最新已发生重置记录为历史基线，已有的待执行计划会立即进入投递。后续通过历史接口分页补查上次成功查询以来的重置。计划公布、计划时间调整、重置执行分别形成通知；同一消息对同一收件人成功投递后去重，失败投递在下次轮询重试。API 的 `active_watch` 概率预测保留为查询数据，邮件触发条件使用明确的计划和执行消息。邮件时间采用 `Asia/Singapore`（UTC+8），并附公告原文和数据来源链接。X 来源的公告直接使用 API 返回的英文消息，以帖子卡片展开，保留原文、换行和链接；外层共用早报的邮件模板。
-
-```bash
-# 只查看当前快照，不发送邮件
-scripts/run-job.sh resets send-test --dry-run
-
-# 验收邮件固定发往 yceachan@foxmail.com，带 [TEST] 标记
-scripts/run-job.sh resets send-test
-
-# 单独检查重置消息；dry-run 保留查询进度和投递状态
-scripts/run-job.sh resets run --dry-run
-scripts/run-job.sh resets run
-
-# 执行与定时器相同的一轮任务
-scripts/run-job.sh poll
-```
-
-测试邮件使用独立入口，发送记录与正式通知分开。`poll` 会分别处理重置任务和早报任务的错误，任何一项失败时仍执行另一项，并以非零退出码报告故障。重置查询失败时，已排队的邮件仍会重试；查询进度在完整读取 API 后提交。生产环境统一通过带文件锁的 `scripts/run-job.sh` 执行，避免定时与手工操作并发投递。
-
-## 为什么原型仍保留 SQLite
-
-SQLite 的核心价值不是缓存邮件 HTML，而是保存定时任务必须共享的少量状态：RSS 的 ETag、期刊 GUID 去重、收件人名单，以及每个“期刊 × 收件人”的 pending/sent/failed 投递账本。没有这层持久状态，15 分钟轮询、进程中断和 SMTP 临时失败很容易造成漏发或重复发送。
-
-因此现阶段保留单文件 SQLite，比把同样的状态拆成 JSON、锁文件和发送标记更简单可靠。`rendered_html` / `rendered_text` 只是可重建的派生缓存，不是数据库存在的理由；测试入口已经不再读取它们，部署时也会统一刷新。若原型以后改成“仅一个固定收件人、允许偶尔重复、无失败重试”，才适合连同投递账本一起移除数据库。
-
-## QQ 邮箱发件机器人
-
-配置 QQ 邮箱 SMTP：服务器 `smtp.qq.com`，端口 `465`，SSL/TLS 开启，用户名使用完整邮箱地址 `yceachan@qq.com`。密码必须是 QQ 邮箱设置中生成的 16 位 SMTP 授权码，不是 QQ 登录密码；修改 QQ 密码后需要重新生成授权码。QQ 官方说明见[帮助文档](https://help.mail.qq.com/detail/106/985)。
-
-认证值不要写入 Git 或提交到 `config.toml`。在服务器的 `~/.profile` 中提供环境变量，并把文件权限设为仅自己可读：
-
-```bash
-export QQ_SMTP_USERNAME='yceachan@qq.com'
-export QQ_SMTP_AUTH_CODE='在 QQ 邮箱生成的 16 位授权码'
 chmod 600 ~/.profile
 ```
 
-`config.toml` 只保留 `$QQ_SMTP_USERNAME`、`$QQ_SMTP_AUTH_CODE` 等引用；程序支持 `$NAME` 和 `${NAME}`。`scripts/run-job.sh` 被 cron/systemd 调用时会显式加载 `~/.profile`，profile 应只包含可由 Bash/POSIX shell 执行的 `export` 声明。更严格的生产环境可把这些变量改放在仅当前用户可读的独立 `EnvironmentFile`，再让调度器加载。
+QQ 邮箱配置为 `smtp.qq.com:465`、SSL/TLS，密码填写邮箱设置中生成的 SMTP 授权码。授权码获取方法见 [QQ 邮箱帮助](https://help.mail.qq.com/detail/106/985)。
 
-wrapper 会把 `~/.local/bin` 和 `~/bin` 加入非交互服务的 `PATH`，因此通过这些目录安装的 Node 在 cron 和 systemd 中都可用。
+编辑 `config.toml`：
 
-在登录 shell 没有自动加载 `~/.profile` 的环境中，可以通过同一个安全 wrapper 执行管理命令：
+```toml
+[feed]
+url = "https://daily.juya.uk/rss.xml"
+
+[database]
+path = "data/ai-morning-post.sqlite"
+
+[resets]
+enabled = false
+
+[email]
+host = "smtp.qq.com"
+port = 465
+secure = true
+username = "$QQ_SMTP_USERNAME"
+password = "$QQ_SMTP_AUTH_CODE"
+from = "$QQ_SMTP_USERNAME"
+from_name = "AI Morning Post"
+subject_prefix = "AI Morning Post"
+mode = "full"
+```
+
+需要重置通知时，把 `[resets].enabled` 改为 `true`。早报版式可选 `full` 或 `compact`；历史期刊的版式更新通过 `rerender` 完成。
+
+环境变量引用支持完整的 `$NAME` 和 `${NAME}`。数据库相对路径以配置文件所在目录为基准。`config.toml`、授权码和运行数据库均由部署用户本地保存，Git 已配置忽略这些文件。
+
+生产命令统一使用 `scripts/run-job.sh`：它加载 `~/.profile`、补齐 `~/.local/bin` 与 `~/bin` 的 PATH，并通过 `data/run.lock` 避免定时任务与手工命令并发运行。`~/.profile` 中的配置应可由 Bash 执行，加载失败会终止本次任务。
+
+### 3. 初始化名单、历史基线与验收
+
+将示例邮箱换成实际收件人：
 
 ```bash
+scripts/run-job.sh subscriber add reader@example.com --days everyday
+scripts/run-job.sh subscriber list
 scripts/run-job.sh smtp verify
-scripts/run-job.sh send-latest
+
+# 首次抓取：把现有 RSS 期刊入库，作为历史基线
+scripts/run-job.sh fetch
+
+# 预览已有最新期刊，并发送一封早报测试邮件
+scripts/run-job.sh preview --text
+scripts/run-job.sh send-test reader@example.com
 ```
 
-## VPS 部署
+`fetch` 负责入库，测试邮件走独立验收入口。完成这组初始化后，定时任务会投递以后发现的新期刊。如果从空库直接执行 `run`，该轮会选择 RSS 最新一期向符合当天设置的用户正式投递。
 
-目标目录为 `~/work/Ai-Morning-Post`。在 VPS 上执行：
+启用重置通知时，还可预览或发送当前公告快照：
 
 ```bash
-cd ~/work/Ai-Morning-Post
-git pull --ff-only
-bash deploy/install.sh --dry-run
-bash deploy/install.sh
-
-# 仅首次执行；之后重复执行会保留已有 config.toml 和数据库
-node dist/cli.js --config config.toml subscriber add yceachan@foxmail.com
-node dist/cli.js --config config.toml preview
-node dist/cli.js --config config.toml send-test yceachan@foxmail.com
-node dist/cli.js --config config.toml run --dry-run
+scripts/run-job.sh resets send-test --dry-run
+scripts/run-job.sh resets send-test
 ```
 
-安装脚本会安装依赖、构建程序、创建 `data/`、`logs/`、`backups/`，并把无密钥的 `deploy/config.toml.example` 首次复制为权限 `600` 的 `config.toml`。它不会覆盖已有配置，不会读取或提交授权码，也不会改变不带 `ai-morning-post managed cron` 标记的 crontab 行。
+重置测试收件人固定为 **yceachan@foxmail.com**，由源码中的 `RESET_TEST_RECIPIENT` 定义。两个测试入口都带 `[TEST]`，保持正式投递记录原状。重置测试优先选取当前计划，其次选取最新已执行公告；API 有可用公告时可发送。
 
-安装脚本默认使用当前用户的单条 crontab，每 15 分钟执行一次；已部署的 VPS 当前使用 user-systemd timer：
+### 4. 启用定时任务
 
-```bash
-crontab -l
-tail -f ~/work/Ai-Morning-Post/logs/cron.log
-```
+**user-systemd（当前 VPS 使用此方式）**
 
-安装是幂等的，重复运行只保留一条带 marker 的任务。若管理员执行：
+为部署用户开启退出登录后继续运行的能力。在部署用户会话中执行一次（需管理员权限）：
 
 ```bash
 sudo loginctl enable-linger "$USER"
 ```
 
-之后可以切换到 user-systemd timer：
+部署用户执行：
 
 ```bash
+bash deploy/install.sh --scheduler systemd --dry-run
 bash deploy/install.sh --scheduler systemd
+
 systemctl --user status ai-morning-post.timer
-journalctl --user -u ai-morning-post.service -f
+systemctl --user list-timers ai-morning-post.timer
 ```
 
-模板位于 `deploy/systemd/`，service 使用同一个 profile-loading wrapper，timer 周期为 15 分钟。
+timer 配置为开机后约 5 分钟触发，后续周期约 15 分钟；启用时若已超过开机触发时间，可能立即运行。service 每次执行一轮 `poll`。
 
-## 备份、日志与回滚
-
-每次升级前建议执行：
+**用户 crontab**
 
 ```bash
-scripts/backup.sh
+bash deploy/install.sh --scheduler cron --dry-run
+bash deploy/install.sh --scheduler cron
+crontab -l
 ```
 
-备份默认为 `backups/newsletter-<UTC>.sqlite3`，保留 14 天；可用 `AI_MORNING_POST_DB` 和 `AI_MORNING_POST_BACKUP_KEEP_DAYS` 覆盖数据库路径和保留期。cron 日志在 `logs/cron.log`；systemd 模式使用 `journalctl --user` 查看。
+cron 使用带 `ai-morning-post managed cron` 标记的单条 `*/15` 任务；不指定 `--scheduler` 时，安装器默认选择 cron。
 
-代码回滚采用可审计的 Git 提交，不使用 `reset --hard`：
+两种调度方式择一启用。由 cron 切换到 systemd 时，先通过 `crontab -e` 删除上述标记行；反向切换时，先执行 `systemctl --user disable --now ai-morning-post.timer`。安装器只管理所选调度器，保留另一种调度器的已有配置。
+
+安装器会安装依赖、构建、创建权限为 `700` 的运行目录，并重建历史邮件渲染缓存；已有 `config.toml`、订阅者及投递记录会保留。配置文件缺失时从 `deploy/config.toml.example` 创建。已完成构建和缓存重建时，可添加 `--skip-build`。
+
+## 用户列表维护
+
+登录服务器后，以下命令均在项目目录执行：
+
+```bash
+ssh vps
+cd ~/work/Ai-Morning-Post
+```
+
+```bash
+# 查看启用用户；--all 同时显示已停用用户
+scripts/run-job.sh subscriber list
+scripts/run-job.sh subscriber list --all
+
+# 新增或重新启用，并明确设置每天接收
+scripts/run-job.sh subscriber add reader@example.com --days everyday
+
+# 修改接收日期
+scripts/run-job.sh subscriber schedule reader@example.com work
+scripts/run-job.sh subscriber schedule reader@example.com weekend
+scripts/run-job.sh subscriber schedule reader@example.com everyday
+
+# 自定义：周一、周三、周五、周六接收
+scripts/run-job.sh subscriber schedule reader@example.com "7b'10101_10"
+
+# 停用，保留用户及其历史投递记录
+scripts/run-job.sh subscriber remove reader@example.com
+```
+
+| 日期设置 | 接收星期 | 掩码 |
+| --- | --- | --- |
+| `everyday` | 周一至周日 | `11111_11` |
+| `work` | 周一至周五 | `11111_00` |
+| `weekend` | 周六、周日 | `00000_11` |
+| `"7b'10101_10"` | 周一、周三、周五、周六 | 从左至右依次对应周一至周日，1 表示接收 |
+
+新增用户省略 `--days` 时采用 `everyday`；已有用户省略该参数时保留原接收日期，并恢复启用状态。`schedule` 修改已存在用户的日期，用户是否启用仍由 `add` / `remove` 控制。邮箱会去除首尾空格并统一为小写。
+
+早报在发现新期刊、首次建立投递任务时按当天星期筛选收件人。不符合当天配置的期刊直接跳过；已建立的 pending/failed 投递跨日继续重试。新增用户参与之后新建的投递任务，历史早报验收使用 `send-test EMAIL`。
+
+启用 Codex 重置通知后，**全部有效订阅者**都会收到新重置公告，早报星期设置只作用于早报。停用邮箱同时停止其早报和重置通知。
+
+## 运行与运维命令
+
+### 轮询与投递
+
+```bash
+# 与定时任务相同：按配置检查重置公告，再处理早报
+scripts/run-job.sh poll
+
+# 单独处理早报：抓取新期刊，并重试已有 pending/failed 投递
+scripts/run-job.sh run
+
+# 单独处理 Codex 重置公告
+scripts/run-job.sh resets run
+```
+
+`[resets].enabled` 控制 `poll` 是否执行重置任务；显式调用 `resets run` 会直接运行该任务。`poll` 中任一任务失败后仍会执行另一项，最终通过非零退出码报告故障。
+
+重置首次查询会把最新已执行公告记为历史基线，把仍有效的计划建立为待投递通知。后续查询补查上次成功检查以来的执行记录，并持续检查最新执行公告和当前计划。计划公布、计划时间调整、执行完成分别去重；API 的 `active_watch` 概率预测保留为查询数据，触发通知使用明确的计划或执行公告。
+
+查询失败时，已有重置待投递任务仍会重试；完整读取 API 后才提交查询进度。早报抓取成功后处理其新任务和重试任务，抓取失败时保留记录，等待后续轮询恢复。
+
+### 预览、测试与 dry-run
+
+```bash
+scripts/run-job.sh preview                 # 输出最新早报 HTML
+scripts/run-job.sh preview --text          # 输出纯文本
+scripts/run-job.sh send-test reader@example.com
+scripts/run-job.sh send-test reader@example.com --dry-run
+
+scripts/run-job.sh resets send-test --dry-run
+scripts/run-job.sh resets send-test
+scripts/run-job.sh resets run --dry-run
+```
+
+| 命令 | 输出或行为 | 状态变化 |
+| --- | --- | --- |
+| `preview` | 用当前模板渲染最新早报 | 有期刊时读取原文；空库时先抓取入库 |
+| `send-test EMAIL` | 把最新早报发往指定邮箱 | 保持正式投递记录原状；需要已有期刊 |
+| `send-test EMAIL --dry-run` | 检查期刊与渲染流程，输出目标邮箱 | 保持正式投递记录原状，跳过 SMTP |
+| `resets send-test --dry-run` | 查询 API 并输出当前公告邮件文本 | 保持查询进度及正式投递记录原状 |
+| `resets run --dry-run` | 查询可发现的重置事件数量 | 保持查询进度及正式投递记录原状 |
+| `run --dry-run` | 抓取 RSS 并报告待处理期刊数、当天合格用户数 | **更新 RSS 状态并保存新期刊**，跳过投递建单与 SMTP |
+| `poll --dry-run` | 对两个任务分别执行 dry-run | 早报部分具有上一行所述入库行为 |
+
+早报 dry-run 会提前记录新发现的期刊。要在正式发送前模拟完整抓取，请使用独立数据库副本；正式库中的内容验收优先使用 `preview` 和 `send-test`。同理，`fetch` 适合初始化历史基线或有意手工入库，日常自动投递使用 `poll`。
+
+手工命令输出 `another run is active; skipping` 时，表示本次因文件锁退出，待当前任务完成后重新执行。
+
+### 日志与服务管理
+
+systemd：
+
+```bash
+systemctl --user status ai-morning-post.service
+systemctl --user list-timers ai-morning-post.timer
+journalctl --user -u ai-morning-post.service -n 100 --no-pager
+journalctl --user -u ai-morning-post.service -f
+
+# 通过 service 立即运行一轮
+systemctl --user start ai-morning-post.service
+
+# 暂停 / 恢复后续定时触发
+systemctl --user stop ai-morning-post.timer
+systemctl --user start ai-morning-post.timer
+```
+
+停止 timer 后，已启动的一轮任务会继续完成。cron 部署查看 `logs/cron.log`；暂停或恢复 cron 通过 `crontab -e` 修改对应标记行。
+
+```bash
+tail -n 100 logs/cron.log
+tail -f logs/cron.log
+```
+
+| 现象 | 检查与处理 |
+| --- | --- |
+| SMTP 配置或认证失败 | 检查 `~/.profile` 的变量，再运行 `scripts/run-job.sh smtp verify`；QQ 授权码更新后重试 |
+| RSS / API 请求失败 | 查看 service journal 或 cron 日志中的 HTTP / 网络错误，恢复连接后执行对应任务 |
+| 用户当天没有早报 | 检查是否有新期刊、用户是否 active、当天是否符合日期设置，以及该期刊是否已建立投递记录 |
+| 新增用户需要看最新一期 | 执行 `scripts/run-job.sh send-test EMAIL` |
+| 模板或模式变更后需要刷新正式邮件缓存 | 执行 `scripts/run-job.sh rerender` 重建正式发送缓存；预览与测试始终使用当前模板 |
+| timer 正常而任务失败 | 查看 service 日志和退出码；timer 的启用状态与单次任务结果分别检查 |
+
+### 命令入口与路径覆盖
+
+查看完整 CLI 帮助：
+
+```bash
+scripts/run-job.sh --help
+```
+
+wrapper 支持用环境变量指定项目、入口和配置路径：
+
+```bash
+AI_MORNING_POST_CONFIG=/absolute/path/config.toml scripts/run-job.sh subscriber list
+```
+
+对应变量为 `AI_MORNING_POST_DIR`、`AI_MORNING_POST_ENTRY` 和 `AI_MORNING_POST_CONFIG`。需要直接调用 CLI 时，全局参数放在命令之前：
+
+```bash
+node dist/cli.js --config config.toml --db /absolute/path/review.sqlite preview --text
+```
+
+直接调用由当前 shell 提供环境变量与并发控制，生产环境沿用 wrapper。systemd 模板固定使用默认项目路径；自定义安装目录时同步修改 unit 的 `WorkingDirectory` 与 `ExecStart`。
+
+## 数据、备份与恢复
+
+SQLite 默认位于 `data/ai-morning-post.sqlite`，保存订阅者、期刊原文、RSS 条件请求状态、邮件渲染缓存，以及早报和重置投递账本。渲染缓存可以从原文重建；名单、查询进度与投递账本通过数据库备份恢复。
+
+在所有生产命令统一使用 wrapper 的前提下，持有同一把锁执行备份：
+
+```bash
+flock data/run.lock scripts/backup.sh
+```
+
+有 `sqlite3` CLI 时，脚本通过 SQLite 在线备份接口生成一致快照；精简环境中使用文件复制，上述锁会等待当前任务释放数据库后再备份。默认输出 `backups/newsletter-<UTC时间>.sqlite3`，文件权限为 `600`，保留 14 天。
+
+数据库路径或保留期自定义时，显式传给备份脚本：
+
+```bash
+AI_MORNING_POST_DB=/absolute/path/newsletter.sqlite \
+AI_MORNING_POST_BACKUP_KEEP_DAYS=30 \
+flock data/run.lock scripts/backup.sh
+```
+
+备份目录可通过 `AI_MORNING_POST_BACKUP_DIR` 覆盖。备份脚本按自己的路径设置寻找数据库；使用自定义 `[database].path` 时，应同时设置 `AI_MORNING_POST_DB`。发件配置和 `~/.profile` 中的凭据另行保存在私有备份中。
+
+恢复时先暂停所用调度器，等待当前任务完成，并保留现状快照。以下是默认路径下的 systemd 恢复示例，把文件名换成选定备份：
+
+```bash
+systemctl --user stop ai-morning-post.timer
+
+flock data/run.lock bash -c '
+  set -e
+  scripts/backup.sh
+  cp "backups/newsletter-<UTC时间>.sqlite3" data/ai-morning-post.sqlite
+  chmod 600 data/ai-morning-post.sqlite
+  node dist/cli.js --config config.toml subscriber list --all
+'
+
+scripts/run-job.sh preview --text
+```
+
+恢复旧快照会同时回退投递账本和查询进度。重新启用轮询前，核对快照之后已经成功发送的邮件，评估恢复后可能再次投递的范围。确认后恢复定时触发：
+
+```bash
+systemctl --user start ai-morning-post.timer
+```
+
+## 升级与回滚
+
+当前 VPS 使用 systemd。升级先暂停后续触发，在文件锁内备份、更新代码并安装：
+
+```bash
+cd ~/work/Ai-Morning-Post
+systemctl --user stop ai-morning-post.timer
+
+flock data/run.lock bash -c '
+  set -e
+  scripts/backup.sh
+  git pull --ff-only
+  bash deploy/install.sh --scheduler systemd
+'
+
+systemctl --user status ai-morning-post.timer
+scripts/run-job.sh subscriber list
+scripts/run-job.sh preview --text
+```
+
+安装器完成依赖安装、构建和历史缓存重建后启用 timer。升级中途失败时，修复对应错误并重新执行安装步骤。cron 部署采用相同的备份与更新顺序，维护期间先暂停标记行，安装参数改为 `--scheduler cron`。
+
+代码回滚使用可审计的 `git revert`。沿用上述暂停调度、文件锁与备份步骤，把 `COMMIT_SHA` 换成需要撤销的提交，在锁内执行：
 
 ```bash
 git log --oneline -5
-git revert --no-edit <出问题的提交>
-npm ci && npm run build
-bash deploy/install.sh --skip-build
+git revert --no-edit COMMIT_SHA
+bash deploy/install.sh --scheduler systemd
 ```
 
-如果需要恢复数据库，先停用 cron/timer，保留当前数据库副本，再从 `backups/` 中选择备份用 SQLite 工具恢复；确认 `preview` 和 `subscriber list` 正常后再重新启用调度。不要把 `config.toml`、SQLite 文件、日志或授权码提交到 Git。
+代码回滚会重新构建并刷新渲染缓存；数据库恢复按上一节单独选择快照。日常模板变更也可手工执行：
 
-## 开源与 CI
+```bash
+scripts/run-job.sh rerender
+```
 
-项目使用 MIT License。GitHub Actions 在 Node 24 上执行依赖安装、lint/typecheck（如果项目提供）、测试和构建；工作流不需要 SMTP secrets，也不会发送邮件。
+该操作在单个事务内重建所有历史期刊的 HTML / 纯文本缓存，保留订阅者和投递记录。
+
+## 开发与仓库结构
+
+```bash
+npm ci
+npm run typecheck
+npm test
+npm run build
+```
+
+GitHub Actions 在 Node.js 24 上执行依赖安装、类型检查、测试和构建。测试采用临时数据库和模拟投递，CI 使用仓库代码完成验证。
+
+| 路径 | 职责 |
+| --- | --- |
+| `src/cli.ts` | 命令入口、早报及重置任务调度、发信类型选择 |
+| `src/rss.ts` / `src/render.ts` | 订阅源抓取、内容清理和邮件渲染 |
+| `src/db.ts` / `src/schedule.ts` | SQLite 状态、用户与接收日期 |
+| `src/mailer.ts` | SMTP、早报投递及测试邮件 |
+| `src/resets.ts` / `src/x-post.ts` | 重置事件发现、去重、投递和静态帖子卡片 |
+| `scripts/` | 带锁运行入口及数据库备份 |
+| `deploy/` | 安装器、配置模板和 systemd units |
+| `test/` | 早报、用户日期、重置通知等行为验证 |
+
+项目采用 [MIT License](LICENSE)。
