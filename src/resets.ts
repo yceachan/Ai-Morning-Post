@@ -21,7 +21,6 @@ export interface ResetEvent extends ResetAnnouncement {
 }
 
 interface ResetStatus {
-  latest: ResetEvent | null;
   scheduled: ResetEvent | null;
   generatedAt: string;
 }
@@ -87,35 +86,9 @@ export async function fetchResetStatus(fetchImpl: typeof fetch = fetch): Promise
   const meta = object(response.meta);
   if (meta.api_version !== "v1") throw new Error("Unsupported Codex Resets API version");
   return {
-    latest: data.latest_reset === null ? null : parseAnnouncement(data.latest_reset, "executed"),
     scheduled: data.scheduled_reset === null ? null : parseAnnouncement(data.scheduled_reset, "scheduled"),
     generatedAt: timestamp(meta.generated_at),
   };
-}
-
-async function fetchResetHistory(from: string, fetchImpl: typeof fetch): Promise<ResetEvent[]> {
-  const events: ResetEvent[] = [];
-  const seenCursors = new Set<string>();
-  let cursor: string | undefined;
-  do {
-    const url = new URL(`${API}resets`);
-    url.searchParams.set("from", from);
-    url.searchParams.set("limit", "100");
-    url.searchParams.set("order", "asc");
-    if (cursor) url.searchParams.set("cursor", cursor);
-    const response = object(await getJson(url.href, fetchImpl));
-    if (!Array.isArray(response.data)) throw new Error("Invalid Codex Resets API history");
-    events.push(...response.data.map((row) => parseAnnouncement(row, "executed")));
-    const pagination = object(response.pagination);
-    if (typeof pagination.has_more !== "boolean") throw new Error("Invalid Codex Resets API pagination");
-    if (!pagination.has_more) break;
-    if (typeof pagination.next_cursor !== "string" || !pagination.next_cursor || seenCursors.has(pagination.next_cursor)) {
-      throw new Error("Invalid Codex Resets API cursor");
-    }
-    cursor = pagination.next_cursor;
-    seenCursors.add(cursor);
-  } while (true);
-  return events;
 }
 
 function eventKey(event: ResetEvent): string {
@@ -150,15 +123,12 @@ export class ResetStore {
     return this.store.db.prepare("SELECT 1 FROM reset_events WHERE event_key = ?").get(eventKey(event)) !== undefined;
   }
 
-  record(events: ResetEvent[], checkedAt: string, baselineLatest: ResetEvent | null): number {
+  record(events: ResetEvent[], checkedAt: string): number {
     const db = this.store.db;
     let added = 0;
     db.exec("BEGIN IMMEDIATE");
     try {
       const insert = db.prepare("INSERT OR IGNORE INTO reset_events (event_key, payload) VALUES (?, ?)");
-      // Historical executed resets establish the initial baseline. An existing
-      // scheduled announcement is actionable immediately, including on startup.
-      if (baselineLatest) insert.run(eventKey(baselineLatest), JSON.stringify(baselineLatest));
       for (const event of events) {
         const key = eventKey(event);
         if (Number(insert.run(key, JSON.stringify(event)).changes) === 0) continue;
@@ -180,7 +150,9 @@ export class ResetStore {
       SELECT d.event_key, d.subscriber_id, s.email, e.payload FROM reset_deliveries d
       JOIN reset_events e ON e.event_key = d.event_key
       JOIN subscribers s ON s.id = d.subscriber_id AND s.active = 1
-      WHERE d.status IN ('pending', 'failed') ORDER BY e.rowid, s.email
+      WHERE d.status IN ('pending', 'failed')
+        AND json_extract(e.payload, '$.kind') = 'scheduled'
+      ORDER BY e.rowid, s.email
     `).all() as { event_key: string; subscriber_id: number; email: string; payload: string }[];
     return rows.map((row) => ({ key: row.event_key, subscriberId: row.subscriber_id, email: row.email, event: JSON.parse(row.payload) as ResetEvent }));
   }
@@ -200,16 +172,12 @@ export async function discoverResetEvents(ledger: ResetStore, options: { fetchIm
   const fetchImpl = options.fetchImpl ?? fetch;
   const status = await fetchResetStatus(fetchImpl);
   const checkpoint = ledger.checkpoint();
-  const events = checkpoint ? await fetchResetHistory(checkpoint, fetchImpl) : [];
-  // Execution can retain the original scheduled post's announcement time.
-  // Always inspect latest_reset; the event ledger supplies the deduplication.
-  if (checkpoint && status.latest) events.push(status.latest);
-  if (status.scheduled) events.push(status.scheduled);
+  const events = status.scheduled ? [status.scheduled] : [];
   if (options.dryRun) {
     const unique = new Map(events.map((event) => [eventKey(event), event]));
     return { initialized: checkpoint !== null, discovered: [...unique.values()].filter((event) => !ledger.hasEvent(event)).length };
   }
-  const discovered = ledger.record(events, status.generatedAt, checkpoint ? null : status.latest);
+  const discovered = ledger.record(events, status.generatedAt);
   return { initialized: checkpoint !== null, discovered };
 }
 
@@ -225,11 +193,9 @@ function displayTime(value: string): string {
 }
 
 export function renderResetMessage(event: ResetEvent, to: string, test = false): OutgoingMessage {
-  const title = event.kind === "scheduled" ? "Codex 重置计划已公布" : "Codex 新重置消息";
+  const title = "Codex 重置计划已公布";
   const type = event.reset_type === "banked" ? "备用重置额度（banked）" : "常规重置（regular）";
-  const timing = event.kind === "scheduled"
-    ? `计划时间：${event.scheduled_for ? displayTime(event.scheduled_for) : "公告尚未给出具体时间"}`
-    : `公告时间：${displayTime(event.announced_at)}`;
+  const timing = `计划时间：${event.scheduled_for ? displayTime(event.scheduled_for) : "公告尚未给出具体时间"}`;
   const intro = test ? "测试邮件 · 以下为当前 API 数据快照。" : "检测到新的 Codex 重置公告。";
   const sourceUrl = event.source.url ?? "https://codex-resets.com";
   const input = {

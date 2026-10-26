@@ -128,8 +128,8 @@ export async function runCli(args: string[] = process.argv.slice(2), dependencie
       if (action === "send-test") {
         if (positionals.length !== 2) throw new Error(`Usage: amp resets send-test (recipient is fixed to ${RESET_TEST_RECIPIENT})`);
         const status = await fetchResetStatus(dependencies.fetchImpl);
-        const event = status.scheduled ?? status.latest;
-        if (!event) throw new Error("No Codex reset announcement available for a test email");
+        const event = status.scheduled;
+        if (!event) throw new Error("No scheduled Codex reset plan available for a test email");
         const message = renderResetMessage(event, RESET_TEST_RECIPIENT, true);
         if (options["dry-run"] === true) {
           outputLine(write, message.text);
